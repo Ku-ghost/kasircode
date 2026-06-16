@@ -244,6 +244,28 @@
         }
 
         /**
+         * Fungsi Navigasi Aman untuk mencegah SyntaxError/TypeError saat memodifikasi lokasi halaman di Sandbox/Iframe
+         */
+        function safeNavigateToTable(tableId) {
+            localStorage.setItem(APP_ID + '_locked_table_session', tableId);
+            AppState.currentTable = tableId;
+            
+            try {
+                let currentUrlStr = window.location.href;
+                // Atasi skenario URL kosong atau sandboxed frame kosong
+                if (!currentUrlStr || currentUrlStr === 'about:blank' || currentUrlStr.startsWith('about:')) {
+                    currentUrlStr = window.location.origin || 'http://localhost';
+                }
+                const url = new URL(currentUrlStr);
+                url.searchParams.set('table', tableId);
+                history.pushState(null, '', url.pathname + url.search);
+            } catch (e) {
+                console.warn("PushState diblokir oleh lingkungan iframe, memuat state secara asinkron:", e);
+            }
+            initRouter();
+        }
+
+        /**
          * ==========================================
          * 4. ROUTING & ANTI-TAMPER SECURE ENGINE
          * ==========================================
@@ -252,10 +274,20 @@
             const params = new URLSearchParams(window.location.search);
             const savedLockedTable = localStorage.getItem(APP_ID + '_locked_table_session');
 
-            // Proteksi URL: Jika parameter meja dihapus tapi ada sesi tersimpan, paksa balik!
+            // Proteksi URL: Jika parameter meja dihapus tapi ada sesi tersimpan, paksa balik secara aman!
             if (!params.has('table')) {
                 if (savedLockedTable) {
-                    history.pushState(null, '', '?table=' + savedLockedTable);
+                    try {
+                        let currentUrlStr = window.location.href;
+                        if (!currentUrlStr || currentUrlStr === 'about:blank' || currentUrlStr.startsWith('about:')) {
+                            currentUrlStr = window.location.origin || 'http://localhost';
+                        }
+                        const url = new URL(currentUrlStr);
+                        url.searchParams.set('table', savedLockedTable);
+                        history.pushState(null, '', url.pathname + url.search);
+                    } catch (e) {
+                        console.warn(e);
+                    }
                     initRouter();
                     return;
                 }
@@ -310,7 +342,7 @@
                         <p class="text-gray-400 text-sm mb-8 leading-relaxed">
                             Silakan pindai QR Code yang berada di atas meja Anda untuk dapat memesan hidangan dari menu secara instan.
                         </p>
-                        <button onclick="localStorage.setItem('${APP_ID}_locked_table_session', 'TAKE-AWAY'); window.location.href='?table=TAKE-AWAY'" class="w-full py-4 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 font-black rounded-xl text-xs hover:scale-105 transition-all shadow-neon-blue">
+                        <button onclick="safeNavigateToTable('TAKE-AWAY')" class="w-full py-4 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 font-black rounded-xl text-xs hover:scale-105 transition-all shadow-neon-blue">
                             <i class="fas fa-bag-shopping mr-2"></i> PESAN TAKE AWAY (BAWA PULANG)
                         </button>
                     </div>

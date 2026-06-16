@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -162,6 +161,41 @@
             show: (html) => { const c = document.getElementById('modal-container'); c.innerHTML = html; c.classList.remove('hidden'); },
             hide: () => { document.getElementById('modal-container').classList.add('hidden'); }
         };
+
+        /**
+         * Fungsi Pintar untuk Mendapatkan URL Dasar Menu Pelanggan (index.html)
+         * Menghindari kesalahan pengalihan ke halaman admin/kasir di meja pelanggan
+         */
+        function getCustomerBaseUrl() {
+            const origin = window.location.origin;
+            let path = window.location.pathname;
+            
+            // Atasi skenario URL kosong atau sandboxed frame kosong
+            if (!path || path === 'blank' || path.startsWith('about:')) {
+                return origin + '/index.html';
+            }
+
+            // Kasus 1: Menggunakan berkas eksplisit .html (contoh: /cashier.html -> /index.html)
+            if (path.includes('cashier.html')) {
+                return origin + path.replace('cashier.html', 'index.html');
+            }
+            
+            // Kasus 2: URL bersih tanpa .html (contoh: /cashier -> / atau /index.html)
+            if (path.endsWith('/cashier')) {
+                return origin + path.slice(0, -8) + '/index.html';
+            }
+            
+            // Kasus 3: Jika berada dalam sub-folder atau router kustom
+            let segments = path.split('/');
+            let lastSegment = segments[segments.length - 1];
+            if (lastSegment === 'cashier' || lastSegment === 'cashier.html') {
+                segments[segments.length - 1] = 'index.html';
+                return origin + segments.join('/');
+            }
+            
+            // Fallback default aman ke root utama index.html
+            return origin + (path.endsWith('/') ? path + 'index.html' : '/index.html');
+        }
 
         /**
          * ==========================================
@@ -464,7 +498,9 @@
         }
 
         function renderSettingsSesi(container) {
-            const base = window.location.origin + window.location.pathname.replace('cashier.html', 'index.html');
+            // Memanggil fungsi pintar penentu URL pelanggan
+            const base = getCustomerBaseUrl();
+            
             container.innerHTML = `
                 <div class="max-w-2xl space-y-6 animate-fade-in">
                     <!-- Generator QR Code Link -->
@@ -480,6 +516,9 @@
                                     <input type="text" id="qr-link" readonly value="${base}?table=M-1" class="w-full bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-neon-blue font-mono">
                                     <button onclick="copyQRLink()" class="px-4 py-2 bg-neon-blue text-coffee-900 rounded-xl text-xs font-bold"><i class="fas fa-copy"></i></button>
                                 </div>
+                                <p class="text-[10px] text-gray-400 mt-2 leading-relaxed">
+                                    <i class="fas fa-info-circle text-neon-blue mr-1"></i> Tautan di atas mengarah tepat ke halaman pelanggan (<code class="text-neon-blue">index.html</code>) secara dinamis, mencegah masuk ke portal admin.
+                                </p>
                             </div>
                         </div>
                     </div>

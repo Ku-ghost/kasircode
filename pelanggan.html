@@ -134,6 +134,7 @@
                             taxRate: 0.10,
                             numTables: 12,
                             storeStatus: 'open', 
+                            adminPin: '1234',
                             promos: [
                                 "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80",
                                 "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=800&q=80"
@@ -342,9 +343,17 @@
                         <p class="text-gray-400 text-sm mb-8 leading-relaxed">
                             Silakan pindai QR Code yang berada di atas meja Anda untuk dapat memesan hidangan dari menu secara instan.
                         </p>
-                        <button onclick="safeNavigateToTable('TAKE-AWAY')" class="w-full py-4 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 font-black rounded-xl text-xs hover:scale-105 transition-all shadow-neon-blue">
-                            <i class="fas fa-bag-shopping mr-2"></i> PESAN TAKE AWAY (BAWA PULANG)
-                        </button>
+                        
+                        <div class="space-y-3">
+                            <button onclick="safeNavigateToTable('TAKE-AWAY')" class="w-full py-4 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 font-black rounded-xl text-xs hover:scale-105 transition-all shadow-neon-blue">
+                                <i class="fas fa-bag-shopping mr-2"></i> PESAN TAKE AWAY (BAWA PULANG)
+                            </button>
+                            
+                            <!-- Pintu Masuk / Link Saling untuk Kemudahan Akses Staf di Layar Setup -->
+                            <button onclick="window.location.href='cashier.html'" class="w-full py-2.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white border border-white/10 rounded-xl text-xs transition-all flex items-center justify-center gap-2">
+                                <i class="fas fa-user-shield text-neon-blue"></i> Masuk Portal Staf & Kasir
+                            </button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -512,6 +521,53 @@
             }, 5000);
         }
 
+        /**
+         * Logika Gerakan Rahasia Pengalihan Staf (Cross-Linking Secure Panel)
+         * Ketuk Judul Toko sebanyak 5 kali untuk membuka modal otorisasi masuk cashier.html
+         */
+        let titleClickCount = 0;
+        function handleHiddenStaffTap() {
+            titleClickCount++;
+            if (titleClickCount >= 5) {
+                titleClickCount = 0;
+                showStaffOtorisasiModal();
+            }
+            // Setel ulang ketukan jika tidak ada ketukan tambahan dalam 3 detik
+            setTimeout(() => { titleClickCount = 0; }, 3000);
+        }
+
+        function showStaffOtorisasiModal() {
+            ModalSystem.show(`
+                <div class="glass-panel p-8 rounded-3xl w-11/12 max-w-sm text-center shadow-neon-purple border-neon-purple/30 animate-fade-in">
+                    <div class="w-12 h-12 bg-neon-purple/10 border border-neon-purple/30 rounded-xl flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-user-shield text-xl text-neon-purple"></i>
+                    </div>
+                    <h2 class="text-lg font-black text-white uppercase tracking-wider mb-2">OTORISASI PORTAL STAF</h2>
+                    <p class="text-gray-400 text-xs mb-6 leading-relaxed">Pintu gerbang rahasia. Masukkan PIN Admin/Kasir untuk beralih ke dasbor POS utama.</p>
+                    <input type="password" id="staff-gate-pin" placeholder="••••" class="glow-input w-full bg-coffee-900 border border-white/15 rounded-xl px-4 py-3 text-center text-neon-purple tracking-widest text-2xl mb-6 font-mono focus:outline-none">
+                    <div class="flex gap-3">
+                        <button onclick="ModalSystem.hide()" class="flex-1 py-2.5 rounded-xl border border-white/10 text-xs text-gray-400">Batal</button>
+                        <button onclick="prosesVerifikasiStaffGate()" class="flex-1 py-2.5 rounded-xl bg-neon-purple text-coffee-900 font-bold text-xs shadow-neon-purple">Validasi Sesi</button>
+                    </div>
+                </div>
+            `);
+        }
+
+        function prosesVerifikasiStaffGate() {
+            const pinVal = document.getElementById('staff-gate-pin').value;
+            // Gunakan PIN dari settings, atau default ke '1234' jika belum sinkron
+            const targetPin = AppState.settings.adminPin || '1234';
+            if (pinVal === targetPin) {
+                showCustomToast("Otorisasi Sukses! Mengalihkan ke Dashboard...", "success");
+                setTimeout(() => {
+                    window.location.href = 'cashier.html';
+                }, 1000);
+            } else {
+                showCustomToast("Otorisasi Gagal! PIN Salah.", "error");
+                document.getElementById('staff-gate-pin').value = '';
+            }
+        }
+
         function renderCustomerKiosk() {
             const app = document.getElementById('app');
             const promos = AppState.settings.promos || [];
@@ -541,7 +597,8 @@
                 <div class="flex h-full w-full bg-coffee-900 relative overflow-hidden">
                     <div id="main-content" class="flex-1 flex flex-col h-full overflow-y-auto p-6 pb-24 z-10 transition-all duration-300">
                         <div class="flex justify-between items-center mb-6 glass-panel p-4 rounded-2xl border-neon-blue/20">
-                            <div>
+                            <!-- Ketukan rahasia dipasang di sini untuk staf -->
+                            <div onclick="handleHiddenStaffTap()" class="cursor-pointer select-none">
                                 <h1 class="text-2xl font-black text-white tracking-wider uppercase">${AppState.settings.storeName.split(' ')[0]}<span class="text-neon-blue">${AppState.settings.storeName.split(' ').slice(1).join(' ') || ''}</span></h1>
                                 <p class="text-gray-400 text-[10px] mt-0.5">${AppState.settings.storeSlogan}</p>
                             </div>

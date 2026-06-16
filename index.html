@@ -96,23 +96,21 @@
 
     <script>
         /**
-         * ==========================================
-         * 1. VARIABEL IDENTITAS SCRIPT & KONSTANTA
-         * ==========================================
+         * =======================================================================
+         * 1. VARIABEL IDENTITAS SCRIPT & KONSTANTA LISENSI
+         * =======================================================================
          */
         const APP_ID = "SMARTPOS_UKM_01";
         const SALT_KEY = "kugoskom"; 
-
-        // CONFIG KUNCI GERBANG LISENSI (PREVIEW MODE)
         const BYPASS_LICENSE_FOR_PREVIEW = true; 
 
-        // TARGET ENDPOINT CLOUDFLARE WORKERS UTAMA
+        // TARGET ENDPOINT CLOUDFLARE WORKERS UTAMA (Sesuaikan jika URL worker Anda berbeda)
         const API_BASE_URL = "https://kasirmandiri.ku-ghost.workers.dev/api/gate";
 
         /**
-         * ==========================================
-         * SYSTEM TOAST & MODAL SYSTEM (Anti Sandbox Block)
-         * ==========================================
+         * =======================================================================
+         * SYSTEM TOAST, CONFIRMATION & CUSTOM MODAL
+         * =======================================================================
          */
         function showCustomToast(message, type = 'success') {
             const toast = document.createElement('div');
@@ -147,20 +145,6 @@
 
         /**
          * ==========================================
-         * TATA KELOLA STATUS MEJA (TABLE STATUS STORAGE)
-         * ==========================================
-         */
-        const TableStatusManager = {
-            getStatus: function(tableId) {
-                return localStorage.getItem(`byod_table_status_${tableId}`) || 'vacant';
-            },
-            setStatus: function(tableId, status) {
-                localStorage.setItem(`byod_table_status_${tableId}`, status);
-            }
-        };
-
-        /**
-         * ==========================================
          * 2. STATE MANAGEMENT & AUTO-CREATE DATABASE
          * ==========================================
          */
@@ -179,7 +163,6 @@
                             numTables: 12,
                             webhookKitchen: '', 
                             webhookCashier: '',
-                            driveSyncLink: '',
                             storeStatus: 'open', 
                             promos: [
                                 "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80",
@@ -201,24 +184,7 @@
                     this.save(defaultDB);
                     return defaultDB;
                 }
-                
-                let parsed = JSON.parse(localData);
-                if (!parsed.categories) {
-                    parsed.categories = ['Minuman', 'Makanan', 'Snack'];
-                    this.save(parsed);
-                }
-                if (!parsed.settings.storeStatus) {
-                    parsed.settings.storeStatus = 'open';
-                    this.save(parsed);
-                }
-                if (!parsed.settings.promos) {
-                    parsed.settings.promos = [
-                        "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80",
-                        "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=800&q=80"
-                    ];
-                    this.save(parsed);
-                }
-                return parsed;
+                return JSON.parse(localData);
             },
             save: function(dataObj) {
                 localStorage.setItem(this.dbKey, JSON.stringify(dataObj));
@@ -245,225 +211,47 @@
             cart: [],
             currentTable: null,
             viewMode: 'landing',
+            currentTableStatus: 'vacant', // vacant, ordering, locked, done
+            activeOrderDetails: null,     // data nota/pesanan aktif meja ini
             store_reg_name: licenseMeta.regName || 'kasirmandiri_ukm' 
         };
-
-        if (!AppState.settings.promos) {
-            AppState.settings.promos = [
-                "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80",
-                "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=800&q=80"
-            ];
-        }
 
         const formatRp = (num) => 'Rp ' + num.toLocaleString('id-ID');
 
         /**
-         * ==========================================
-         * 3. OFF-LINE SECURITY & ANTI-FRAUD ENGINE
-         * ==========================================
+         * =======================================================================
+         * 3. SINKRONISASI CLOUDFLARE WORKER DATABASE (ANTI-FAIL BACKOFF)
+         * =======================================================================
          */
-        const SecuritySystem = {
-            activationKey: APP_ID + '_is_activated',
-            pwdKey: APP_ID + '_kasir_password',
-            timeKey: APP_ID + '_last_transaction_date',
-            loginDateKey: APP_ID + '_last_login_date',
-            licenseMetaKey: APP_ID + '_license_meta',
+        async function syncToCloud(action, payload = {}) {
+            const token = localStorage.getItem(APP_ID + '_kasir_password') || "PREVIEW_TOKEN";
+            let retries = 5;
+            let delay = 1000;
 
-            generateHash: async function(message) {
-                const msgBuffer = new TextEncoder().encode(message);
-                const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-                const hashArray = Array.from(new Uint8Array(hashBuffer));
-                return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-            },
-
-            parseDateDDMMYYYY: function(str) {
-                if(!str || str.length !== 8) return new Date(0);
-                const d = parseInt(str.substring(0,2));
-                const m = parseInt(str.substring(2,4)) - 1;
-                const y = parseInt(str.substring(4,8));
-                return new Date(y, m, d, 23, 59, 59);
-            },
-
-            updateLastTransaction: function() {
-                localStorage.setItem(this.timeKey, Date.now().toString());
-            },
-
-            checkTimeFraud: function() {
-                const lastDate = localStorage.getItem(this.timeKey);
-                const now = Date.now();
-                if (lastDate && now < parseInt(lastDate)) return false;
-                return true;
-            },
-
-            lifecycleCheck: async function() {
-                if (BYPASS_LICENSE_FOR_PREVIEW) {
-                    console.warn("SISTEM PRATINJAU: Gerbang lisensi bypass aktif.");
-                    return true;
+            while (retries > 0) {
+                try {
+                    const response = await fetch(API_BASE_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            app_id: APP_ID,
+                            store_reg_name: AppState.store_reg_name,
+                            auth_token: token,
+                            action: action,
+                            payload: payload
+                        })
+                    });
+                    if (!response.ok) throw new Error("Respons Server Gagal");
+                    return await response.json();
+                } catch (err) {
+                    retries--;
+                    if (retries === 0) {
+                        console.error("Gagal sinkronisasi data setelah 5 percobaan.");
+                        return { error: err.message };
+                    }
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    delay *= 2; // Exponential Backoff
                 }
-
-                if (!this.checkTimeFraud()) {
-                    this.renderBlockScreen("PELANGGARAN SISTEM TERDETEKSI", "Sistem mendeteksi indikasi manipulasi waktu pada sistem operasi. Akses diblokir.");
-                    return false;
-                }
-
-                const isActivated = localStorage.getItem(this.activationKey);
-                if (isActivated !== 'true') {
-                    this.renderActivationScreen();
-                    return false;
-                }
-
-                const meta = JSON.parse(localStorage.getItem(this.licenseMetaKey) || '{}');
-                const start = this.parseDateDDMMYYYY(meta.startDate || '');
-                const end = this.parseDateDDMMYYYY(meta.endDate || '');
-                start.setHours(0,0,0,0);
-                
-                const now = new Date();
-                if (now.getTime() < start.getTime() || now.getTime() > end.getTime()) {
-                    this.renderBlockScreen("MASA AKTIF LISENSI HABIS", `Lisensi berakhir (${meta.startDate} s/d ${meta.endDate}).`);
-                    return false;
-                }
-
-                const todayStr = new Date().toDateString();
-                const lastLogin = localStorage.getItem(this.loginDateKey);
-                
-                if (lastLogin !== todayStr) {
-                    this.renderDailyLoginScreen();
-                    return false;
-                }
-
-                return true;
-            },
-
-            prosesAktivasi: async function() {
-                const regName = document.getElementById('act-regname').value.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const start = document.getElementById('act-start').value;
-                const end = document.getElementById('act-end').value;
-                const code = document.getElementById('act-code').value.toUpperCase().trim();
-
-                if(!regName || !start || !end || !code) {
-                    showCustomToast("Seluruh kolom wajib diisi!", "error"); return;
-                }
-
-                const rawString = `${regName}${start}${end}${SALT_KEY}`;
-                const fullHash = await this.generateHash(rawString);
-                const validCode = fullHash.substring(0, 12).toUpperCase();
-
-                if (code === validCode) {
-                    localStorage.setItem(this.activationKey, 'true');
-                    localStorage.setItem(this.pwdKey, validCode);
-                    localStorage.setItem(this.licenseMetaKey, JSON.stringify({ regName: regName, startDate: start, endDate: end }));
-                    localStorage.setItem(this.loginDateKey, new Date().toDateString());
-                    
-                    AppState.store_reg_name = regName; 
-                    
-                    showCustomToast("Aktivasi Sukses!");
-                    setTimeout(() => initRouter(), 1500);
-                } else {
-                    showCustomToast("KODE LISENSI TIDAK VALID!", "error");
-                }
-            },
-
-            prosesDailyLogin: function() {
-                const inputPwd = document.getElementById('daily-pwd').value.toUpperCase().trim();
-                const storedPwd = localStorage.getItem(this.pwdKey);
-
-                if (inputPwd === storedPwd) {
-                    localStorage.setItem(this.loginDateKey, new Date().toDateString());
-                    initRouter();
-                } else {
-                    showCustomToast("Password Salah!", "error");
-                }
-            },
-
-            renderActivationScreen: function() {
-                const app = document.getElementById('app');
-                app.innerHTML = `
-                    <div class="h-screen w-screen bg-coffee-900 flex items-center justify-center p-6 relative overflow-hidden">
-                        <div class="glass-panel p-8 rounded-3xl max-w-lg w-full text-center z-10 animate-fade-in shadow-neon-blue border border-neon-blue/20">
-                            <h2 class="text-2xl font-black text-white mb-2 tracking-wide uppercase">Aktivasi <span class="text-neon-blue">POS Mandiri</span></h2>
-                            <p class="text-sm text-gray-400 mb-6 border-b border-white/5 pb-4">Masukan detail registrasi offline Anda.</p>
-                            <div class="space-y-4 text-left">
-                                <div>
-                                    <label class="text-xs text-gray-400 uppercase font-bold tracking-wider">Nama Registrasi (ID Tenant)</label>
-                                    <input type="text" id="act-regname" placeholder="Contoh: kasirmandiri" oninput="this.value = this.value.toLowerCase().replace(/[^a-z0-9]/g, '')" class="glow-input w-full bg-black border border-neon-blue/20 rounded-xl px-4 py-3 text-neon-blue font-mono tracking-wider focus:outline-none lowercase">
-                                </div>
-                                <div class="grid grid-cols-2 gap-4">
-                                    <div><label class="text-xs text-gray-400 uppercase font-bold tracking-wider">Mulai (DDMMYYYY)</label><input type="number" id="act-start" placeholder="01012026" class="glow-input w-full bg-coffee-800 border border-white/10 rounded-xl px-3 py-2 text-white focus:outline-none"></div>
-                                    <div><label class="text-xs text-gray-400 uppercase font-bold tracking-wider">Berakhir (DDMMYYYY)</label><input type="number" id="act-end" placeholder="31122026" class="glow-input w-full bg-coffee-800 border border-white/10 rounded-xl px-3 py-2 text-white focus:outline-none"></div>
-                                </div>
-                                <div><label class="text-xs text-neon-blue font-bold uppercase tracking-wider">Kode Lisensi (12-Digit)</label><input type="text" id="act-code" placeholder="KODE LISENSI" class="w-full bg-black border border-neon-blue/50 rounded-lg px-3 py-3 text-white tracking-widest font-mono text-center uppercase focus:outline-none"></div>
-                            </div>
-                            <button onclick="SecuritySystem.prosesAktivasi()" class="w-full mt-8 py-3 rounded-xl bg-neon-blue text-coffee-900 font-bold hover:shadow-neon-blue-hover transition-all">AKTIVASI PERANGKAT</button>
-                        </div>
-                    </div>
-                `;
-            },
-
-            renderDailyLoginScreen: function() {
-                const app = document.getElementById('app');
-                app.innerHTML = `
-                    <div class="h-screen w-screen bg-coffee-900 flex items-center justify-center p-6 relative overflow-hidden">
-                        <div class="glass-panel p-8 rounded-3xl max-w-sm w-full text-center animate-fade-in shadow-neon-blue border border-neon-blue/20">
-                            <i class="fas fa-lock text-5xl text-neon-blue mb-4 animate-bounce"></i>
-                            <h2 class="text-2xl font-bold text-white mb-2">Login Kasir</h2>
-                            <input type="password" id="daily-pwd" placeholder="KODE LISENSI" class="w-full bg-black border border-white/15 rounded-xl px-4 py-3 text-center text-neon-blue tracking-widest font-mono mb-6 focus:outline-none focus:border-neon-blue uppercase">
-                            <button onclick="SecuritySystem.prosesDailyLogin()" class="w-full py-3 rounded-xl bg-neon-blue text-coffee-900 font-bold hover:shadow-neon-blue-hover transition-all">BUKA AKSES SISTEM</button>
-                        </div>
-                    </div>
-                `;
-            },
-
-            renderBlockScreen: function(title, message) {
-                document.getElementById('app').innerHTML = `
-                    <div class="h-screen w-screen bg-red-950 flex flex-col items-center justify-center p-8 z-50 fixed inset-0">
-                        <h1 class="text-3xl font-black text-white mb-4 text-center">${title}</h1>
-                        <p class="text-red-200 text-center max-w-2xl border border-red-500/30 bg-red-950/40 p-6 rounded-xl">${message}</p>
-                    </div>
-                `;
-            }
-        };
-
-        /**
-         * ==========================================
-         * 4. ONE-TIME SESSION LOCKER (BYOD LOGIC)
-         * ==========================================
-         */
-        const SessionLocker = {
-            isLocked: function(tableId) {
-                return localStorage.getItem(`byod_lock_${tableId}`) === 'true';
-            },
-            lock: function(tableId) {
-                localStorage.setItem(`byod_lock_${tableId}`, 'true');
-            },
-            unlock: function(tableId) {
-                localStorage.removeItem(`byod_lock_${tableId}`);
-            }
-        };
-
-        /**
-         * ==========================================
-         * 5. SINKRONISASI CLOUDFLARE WORKER DATABASE
-         * ==========================================
-         */
-        async function syncToCloud(action, payload) {
-            const token = localStorage.getItem(SecuritySystem.pwdKey) || "PREVIEW_TOKEN";
-            try {
-                // Berkomunikasi langsung lintas domain ke URL API Worker Cloudflare utama Anda
-                const response = await fetch(API_BASE_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        app_id: APP_ID,
-                        store_reg_name: AppState.store_reg_name,
-                        auth_token: token,
-                        action: action,
-                        payload: payload
-                    })
-                });
-                return await response.json();
-            } catch (err) {
-                console.warn("Cloud Sync offline / gagal. Transaksi disimpan secara lokal.", err);
-                return { error: err.message };
             }
         }
 
@@ -482,81 +270,118 @@
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
                 showCustomToast("Database berhasil diekspor!");
-            },
-            
-            importJSON: function(event) {
-                const file = event.target.files[0];
-                if (!file) return;
-                
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    try {
-                        const data = JSON.parse(e.target.result);
-                        if(data.settings && data.products) {
-                            DatabaseManager.save(data);
-                            showCustomToast("Database dipulihkan!");
-                            setTimeout(() => window.location.reload(), 1200);
-                        } else {
-                            showCustomToast("Format JSON salah.", "error");
-                        }
-                    } catch (err) {
-                        showCustomToast("Gagal membaca file JSON.", "error");
-                    }
-                };
-                reader.readAsText(file);
             }
         };
 
         /**
+         * =======================================================================
+         * 4. REAL-TIME SERVER POLLING & REDIRECT KE NOTA DIGITAL (KEAMANAN)
+         * =======================================================================
+         */
+        let statusPollingId = null;
+
+        function startTableStatusPolling(tableId) {
+            if (statusPollingId) clearInterval(statusPollingId);
+            if (!tableId) return;
+
+            statusPollingId = setInterval(async () => {
+                const res = await syncToCloud('check_table_status', { table_id: tableId });
+                if (res && !res.error) {
+                    const prevStatus = AppState.currentTableStatus;
+                    AppState.currentTableStatus = res.status;
+                    AppState.activeOrderDetails = res.order;
+
+                    // Deteksi perubahan status meja secara real-time
+                    if (prevStatus !== res.status) {
+                        console.log(`Status meja ${tableId} berubah: ${prevStatus} -> ${res.status}`);
+                        handleTableStatusTransition(res.status);
+                    }
+                }
+            }, 5000); // Polling berkala setiap 5 detik
+        }
+
+        function stopTableStatusPolling() {
+            if (statusPollingId) {
+                clearInterval(statusPollingId);
+                statusPollingId = null;
+            }
+        }
+
+        function handleTableStatusTransition(status) {
+            // Evaluasi logika navigasi berdasarkan status meja server
+            if (status === 'locked') {
+                renderLockedScreen();
+            } else if (status === 'done') {
+                renderDigitalReceiptScreen();
+            } else if (status === 'vacant' || status === 'ordering') {
+                // Sesi dikosongkan oleh kasir, muat ulang menu kiosk untuk pemesanan baru
+                renderCustomerKiosk();
+            }
+        }
+
+        /**
          * ==========================================
-         * 6. ROUTING & URL PARAMETER PARSING
+         * 5. ROUTING & URL SECURITY CONTROLLER
          * ==========================================
          */
-        function initRouter() {
+        async function initRouter() {
             const params = new URLSearchParams(window.location.search);
+            const currentUrlPath = window.location.pathname;
+
+            // KEAMANAN KETAT: Jika tidak ada parameter apa pun di tautan pelanggan
+            if (!params.has('view') && !params.has('table')) {
+                navigateTo('landing');
+                return;
+            }
+
             if (params.has('view') && params.get('view') === 'admin') {
+                stopTableStatusPolling();
                 navigateTo('admin');
             } else if (params.has('table')) {
-                navigateTo('table', params.get('table'));
+                const tableId = params.get('table');
+                AppState.currentTable = tableId;
+                
+                // Mulai validasi sisi server (D1)
+                const res = await syncToCloud('check_table_status', { table_id: tableId });
+                if (res && !res.error) {
+                    AppState.currentTableStatus = res.status;
+                    AppState.activeOrderDetails = res.order;
+                    
+                    // Aktifkan Background Worker Polling untuk mendeteksi Kasir Klik "Selesai"
+                    startTableStatusPolling(tableId);
+
+                    if (AppState.settings.storeStatus === 'closed') {
+                        renderStoreClosedScreen();
+                    } else if (res.status === 'locked') {
+                        renderLockedScreen();
+                    } else if (res.status === 'done') {
+                        renderDigitalReceiptScreen();
+                    } else {
+                        renderCustomerKiosk();
+                    }
+                } else {
+                    // Fail-safe jika worker gagal terhubung, gunakan mode lokal
+                    renderCustomerKiosk();
+                }
             } else {
                 navigateTo('landing');
             }
         }
 
         function navigateTo(mode, payload) {
-            try {
-                if (mode === 'admin') {
-                    AppState.viewMode = 'admin';
-                    history.pushState(null, '', '?view=admin');
-                    renderAdminLogin();
-                } else if (mode === 'table') {
-                    AppState.viewMode = 'customer';
-                    AppState.currentTable = payload;
-                    history.pushState(null, '', '?table=' + payload);
-                    
-                    if (AppState.settings.storeStatus === 'closed') {
-                        renderStoreClosedScreen();
-                        return;
-                    }
-
-                    if (TableStatusManager.getStatus(payload) === 'vacant') {
-                        TableStatusManager.setStatus(payload, 'ordering');
-                    }
-                    
-                    if (SessionLocker.isLocked(payload)) {
-                        renderLockedBYODScreen(payload);
-                    } else {
-                        renderCustomerKiosk();
-                    }
-                } else {
-                    AppState.viewMode = 'landing';
-                    history.pushState(null, '', window.location.pathname || '/');
-                    renderLandingPage();
-                }
-            } catch (e) {
-                if (mode === 'admin') { AppState.viewMode = 'admin'; renderAdminLogin(); }
-                else if (mode === 'table') { AppState.viewMode = 'customer'; AppState.currentTable = payload; renderCustomerKiosk(); }
-                else { AppState.viewMode = 'landing'; renderLandingPage(); }
+            if (mode === 'admin') {
+                AppState.viewMode = 'admin';
+                history.pushState(null, '', '?view=admin');
+                renderAdminLogin();
+            } else if (mode === 'table') {
+                AppState.viewMode = 'customer';
+                AppState.currentTable = payload;
+                history.pushState(null, '', '?table=' + payload);
+                initRouter();
+            } else {
+                AppState.viewMode = 'landing';
+                history.pushState(null, '', window.location.pathname || '/');
+                renderLandingPage();
             }
         }
 
@@ -565,7 +390,7 @@
             app.innerHTML = `
                 <div class="h-screen w-screen bg-coffee-900 flex flex-col items-center justify-center p-6 text-center">
                     <div class="glass-panel p-10 rounded-3xl max-w-sm w-full border-red-500/20 shadow-neon-blue">
-                        <i class="fas fa-store-slash text-5xl text-red-500 mb-6"></i>
+                        <i class="fas fa-store-slash text-5xl text-red-500 mb-6 animate-pulse"></i>
                         <h2 class="text-2xl font-black text-white uppercase tracking-wider mb-2">OUTLET TUTUP</h2>
                         <p class="text-gray-300 text-sm mb-8">Maaf, saat ini outlet kami sedang tutup. Silakan hubungi staf.</p>
                         <button onclick="navigateTo('landing')" class="w-full py-2.5 rounded-xl bg-white/5 text-white font-bold text-xs border border-white/10">Kembali</button>
@@ -576,107 +401,143 @@
 
         /**
          * ==========================================
-         * 7. INTEGRASI TRANSAKSI WEBHOOKS & SUBMISSION
+         * 6. SUBMISSION TRANSAKSI POS UTAMA
          * ==========================================
          */
-        async function sendToDiscord(channel, payload) {
-            const url = channel === 'kitchen' ? AppState.settings.webhookKitchen : AppState.settings.webhookCashier;
-            if (!url) return;
-            try {
-                await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            } catch (error) { console.error(`Webhook Error:`, error); }
-        }
-
-        async function processOrderSubmission(customerEmail) {
+        async function processOrderSubmission(customerName, isTakeAway = false) {
             if (AppState.cart.length === 0) return;
 
             const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-            let kitchenItems = ''; let cashierItems = ''; let subtotal = 0;
+            const name = customerName || "Pelanggan Tanpa Nama";
+            const tableId = isTakeAway ? "TAKE-AWAY" : AppState.currentTable;
 
-            AppState.cart.forEach(item => {
-                const product = AppState.products.find(p => p.id === item.id);
-                if (product) {
-                    subtotal += product.price * item.qty;
-                    kitchenItems += `- ${item.qty}x ${product.name}\n`;
-                    cashierItems += `- ${item.qty}x ${product.name} (@ ${formatRp(product.price)})\n`;
-                }
+            let subtotal = 0;
+            const itemsPayload = AppState.cart.map(item => {
+                const prod = AppState.products.find(p => p.id === item.id);
+                subtotal += (prod ? prod.price : 0) * item.qty;
+                return {
+                    id: item.id,
+                    name: prod ? prod.name : 'Produk',
+                    qty: item.qty,
+                    price: prod ? prod.price : 0
+                };
             });
 
             const tax = subtotal * AppState.settings.taxRate;
             const totalFinal = subtotal + tax;
-            const emailText = customerEmail ? customerEmail : "Tanpa Email Pelanggan";
-
-            const kitchenPayload = { content: `🛎️ **PESANAN MASUK - MEJA ${AppState.currentTable}**\n${kitchenItems}--------------------------------------\n⏰ *Jam Order: ${timeNow}*\n📧 *Email:* ${emailText}` };
-            const cashierPayload = { content: `💳 **TAGIHAN BARU - MEJA ${AppState.currentTable}**\n${cashierItems}--------------------------------------\nSubtotal: ${formatRp(subtotal)}\nPajak (${AppState.settings.taxRate * 100}%): ${formatRp(tax)}\n💰 **TOTAL TAGIHAN: ${formatRp(totalFinal)}**\n--------------------------------------\n📧 *Email:* ${emailText}\n⏰ *Status:* Antri Belum Bayar` };
-
-            sendToDiscord('kitchen', kitchenPayload);
-            sendToDiscord('cashier', cashierPayload);
-
-            const newOrder = {
-                id: 'ORD-' + Math.floor(Math.random() * 10000),
-                table: AppState.currentTable,
-                items: [...AppState.cart],
-                total: totalFinal,
-                time: timeNow,
-                status: 'pending'
-            };
-
-            AppState.activeOrders.push(newOrder);
 
             const orderPayload = {
-                order_id: newOrder.id,
-                table_number: newOrder.table,
-                total_amount: newOrder.total,
-                order_time: newOrder.time,
-                items: newOrder.items.map(item => {
-                    const p = AppState.products.find(x => x.id === item.id);
-                    return { id: item.id, name: p ? p.name : 'Menu', qty: item.qty, price: p ? p.price : 0 };
-                })
+                order_id: 'ORD-' + Math.floor(100000 + Math.random() * 900000),
+                table_number: tableId,
+                total_amount: totalFinal,
+                order_time: timeNow,
+                customer_name: name,
+                items: itemsPayload
             };
             
-            // Lakukan sinkronisasi silang domain secara asinkron ke Cloudflare Worker
-            syncToCloud('insert_order', orderPayload);
+            // Simpan pesanan ke database Cloudflare D1
+            const response = await syncToCloud('insert_order', orderPayload);
 
-            SessionLocker.lock(AppState.currentTable);
-            TableStatusManager.setStatus(AppState.currentTable, 'locked');
-
-            SecuritySystem.updateLastTransaction();
-            DatabaseManager.syncState();
-
-            AppState.cart = [];
-            showSuccessModal();
+            if (response && !response.error) {
+                AppState.cart = [];
+                AppState.currentTableStatus = 'locked';
+                
+                // Tampilkan Modal Sukses & Terapkan Layar Kunci
+                ModalSystem.show(`
+                    <div class="glass-panel p-8 rounded-3xl w-11/12 max-w-sm text-center shadow-neon-blue border-neon-blue/20">
+                        <i class="fas fa-check-circle text-5xl text-neon-green mb-4 animate-bounce"></i>
+                        <h2 class="text-xl font-black text-white mb-4">PESANAN TERKIRIM!</h2>
+                        <p class="text-gray-300 text-sm mb-6 leading-relaxed">
+                            Pesanan Anda telah diterima. Silakan bersabar menunggu pesanan Anda diantarkan.<br><br>
+                            <span class="text-neon-blue font-bold">Harap segera lakukan pembayaran di Kasir sebelum meninggalkan tempat. Terima kasih!</span>
+                        </p>
+                        <button onclick="ModalSystem.hide(); initRouter();" class="w-full py-3 bg-neon-blue text-coffee-900 font-bold rounded-xl shadow-neon-blue-hover hover:scale-105 transition-all">Mengerti</button>
+                    </div>
+                `);
+            } else {
+                showCustomToast("Gagal mengirim pesanan ke server. Coba lagi.", "error");
+            }
         }
 
         /**
          * ==========================================
-         * 8. LAYAR KUNCI SELESAI PESAN (ONE-TIME LOCKED)
+         * 7. LAYAR KUNCI & NOTA DIGITAL INTERAKTIF
          * ==========================================
          */
-        function renderLockedBYODScreen(tableId) {
+        function renderLockedScreen() {
             const app = document.getElementById('app');
             app.innerHTML = `
                 <div class="h-screen w-screen bg-coffee-900 flex flex-col items-center justify-center p-6 text-center">
-                    <div class="glass-panel p-10 rounded-3xl max-w-sm w-full border-neon-blue/20 shadow-neon-blue">
+                    <div class="glass-panel p-10 rounded-3xl max-w-sm w-full border-neon-blue/25 shadow-neon-blue animate-fade-in">
                         <div class="w-20 h-20 bg-neon-purple/20 border border-neon-purple/50 rounded-full flex items-center justify-center mx-auto mb-6">
-                            <i class="fas fa-receipt text-3xl text-neon-purple animate-pulse"></i>
+                            <i class="fas fa-clock text-3xl text-neon-purple animate-pulse"></i>
                         </div>
-                        <h2 class="text-2xl font-black text-white uppercase mb-2">SESI PESANAN SELESAI</h2>
-                        <div class="bg-black/30 border border-white/5 py-2 px-4 rounded-xl inline-block mb-6">
-                            <span class="text-neon-blue font-black tracking-widest text-lg">${tableId}</span>
+                        <h2 class="text-xl font-black text-white uppercase mb-4 tracking-wide">PESANAN SEDANG DIPROSES</h2>
+                        <div class="bg-black/40 border border-white/5 py-2 px-4 rounded-xl inline-block mb-6">
+                            <span class="text-neon-blue font-black tracking-widest text-base">${AppState.currentTable}</span>
                         </div>
-                        <p class="text-gray-300 text-sm leading-relaxed mb-8">
-                            Pesanan telah dikirim ke dapur. Layar dikunci otomatis demi keamanan. Silakan lakukan pembayaran di Kasir saat selesai makan.
+                        <p class="text-gray-300 text-sm leading-relaxed mb-6">
+                            Pesanan telah diterima, silakan bersabar menunggu pesanan diantarkan.<br><br>
+                            Sebelum meninggalkan tempat, silakan melakukan pembayaran di kasir.<br>Terima kasih!
                         </p>
-                        <button onclick="navigateTo('landing')" class="w-full py-3 rounded-xl bg-neon-blue/10 text-neon-blue border border-neon-blue/30 font-bold text-sm">Kembali</button>
+                        <p class="text-xs text-gray-500 font-mono">Layar dikunci otomatis demi keamanan transaksi.</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderDigitalReceiptScreen() {
+            const app = document.getElementById('app');
+            const order = AppState.activeOrderDetails;
+            if (!order) {
+                app.innerHTML = `<div class="h-screen w-screen bg-coffee-900 flex items-center justify-center"><p class="text-gray-400">Memuat Nota Digital...</p></div>`;
+                return;
+            }
+
+            app.innerHTML = `
+                <div class="h-screen w-screen bg-coffee-900 flex flex-col items-center justify-center p-6 overflow-y-auto">
+                    <div class="glass-panel p-8 rounded-3xl max-w-sm w-full border-neon-purple/30 shadow-neon-purple animate-fade-in relative">
+                        <div class="w-full h-32 rounded-2xl overflow-hidden mb-6 border border-white/5 bg-coffee-850">
+                            <img src="https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=800&q=80" class="w-full h-full object-cover" alt="Thank You Banner">
+                        </div>
+
+                        <div class="text-center mb-6">
+                            <span class="text-neon-green bg-neon-green/10 border border-neon-green/30 text-[10px] font-black uppercase px-3 py-1 rounded-full">TRANSAKSI SELESAI / LUNAS</span>
+                            <h2 class="text-2xl font-black text-white mt-4 tracking-wider uppercase">NOTA DIGITAL</h2>
+                            <p class="text-xs text-gray-400 mt-1">ID: ${order.order_id}</p>
+                        </div>
+
+                        <div class="border-t border-b border-white/10 py-4 mb-6 space-y-2 max-h-48 overflow-y-auto pr-1">
+                            ${order.items.map(it => `
+                                <div class="flex justify-between text-xs text-gray-300">
+                                    <span>${it.qty}x ${it.name}</span>
+                                    <span class="font-mono">${formatRp(it.price * it.qty)}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+
+                        <div class="space-y-2 mb-6">
+                            <div class="flex justify-between text-xs text-gray-400"><span>Subtotal</span><span class="font-mono">${formatRp(order.subtotal || (order.total_amount * 0.9))}</span></div>
+                            <div class="flex justify-between text-xs text-gray-400"><span>Pajak</span><span class="font-mono">${formatRp(order.tax || (order.total_amount * 0.1))}</span></div>
+                            <div class="flex justify-between text-base font-bold text-white pt-2 border-t border-white/5">
+                                <span>TOTAL BAYAR</span>
+                                <span class="text-neon-blue font-mono">${formatRp(order.total_amount)}</span>
+                            </div>
+                        </div>
+
+                        <div class="text-center p-4 bg-black/40 rounded-2xl border border-white/5">
+                            <p class="text-xs text-neon-blue font-bold">Terima kasih atas kunjungan Anda!</p>
+                            <p class="text-[10px] text-gray-400 mt-1">Simpan atau screenshot layar ini sebagai bukti pembayaran digital.</p>
+                        </div>
                     </div>
                 </div>
             `;
         }
 
         /**
-         * ==========================================
-         * 9. UI MENU PELANGGAN & PROMO SLIDER MODULE
-         * ==========================================
+         * =======================================================================
+         * 8. MENU UTAMA KIOSK & RESPONSIVE PROMO BANNER (MOBILE FIXED)
+         * =======================================================================
          */
         let promoIntervalId = null;
         function initPromoSlider() {
@@ -712,9 +573,10 @@
             const promos = AppState.settings.promos || [];
             let promoHTML = '';
             
+            // FIX OPTIMASI: Banner Iklan dengan batasan tinggi tetap & responsif (overflow-hidden)
             if (promos.length > 0) {
                 promoHTML = `
-                    <div class="relative w-full h-28 sm:h-36 md:h-48 lg:h-56 rounded-2xl overflow-hidden mb-6 border border-white/5 bg-coffee-850 shadow-neon-blue/10">
+                    <div class="relative w-full h-32 sm:h-40 md:h-52 lg:h-60 rounded-2xl overflow-hidden mb-6 border border-white/5 bg-coffee-850 shadow-neon-blue/10">
                         ${promos.map((url, i) => `
                             <div class="promo-slide absolute inset-0 w-full h-full transition-opacity duration-1000 ease-in-out ${i === 0 ? 'opacity-100' : 'opacity-0'}" style="z-index: ${i === 0 ? 10 : 0};">
                                 <img src="${url}" alt="Promo Banner" class="w-full h-full object-cover" onerror="this.src='https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=800&q=80'">
@@ -800,7 +662,7 @@
         function updateMenuDisplay() {
             const grid = document.getElementById('menu-grid');
             if (!grid) return;
-            grid.innerHTML = AppState.products.map((p, index) => {
+            grid.innerHTML = AppState.products.map(p => {
                 const isHabis = p.status === 'habis';
                 return `
                     <div class="glass-panel rounded-2xl p-3 flex flex-col items-center text-center animate-fade-in relative overflow-hidden group border-white/5 hover:border-neon-blue/30 transition-all">
@@ -874,7 +736,7 @@
 
         /**
          * ==========================================
-         * 10. MODALS SYSTEM
+         * 9. MODALS SYSTEM
          * ==========================================
          */
         const ModalSystem = {
@@ -891,23 +753,37 @@
             });
             const finalTotal = total + (total * AppState.settings.taxRate);
 
+            // OPTIMASI: Ganti field email menjadi NAMA PEMESAN untuk antrian Discord
             ModalSystem.show(`
                 <div class="glass-panel p-8 rounded-3xl w-11/12 max-w-md relative animate-fade-in shadow-neon-blue border-neon-blue/30">
-                    <div class="text-center mb-6"><div class="w-16 h-16 rounded-full bg-neon-blue/10 flex items-center justify-center mx-auto mb-4 border border-neon-blue"><i class="fas fa-check-circle text-3xl text-neon-blue"></i></div><h2 class="text-2xl font-bold text-white">Konfirmasi Pemesanan</h2><p class="text-gray-400 mt-2">Total tagihan Anda: <span class="text-neon-blue font-bold text-xl">${formatRp(finalTotal)}</span></p></div>
-                    <div class="mb-6"><label class="block text-sm font-medium text-gray-400 mb-2">Email untuk Struk Digital (Opsional)</label><input type="email" id="customer-email" placeholder="contoh@email.com" class="glow-input w-full bg-coffee-900 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-neon-blue"></div>
-                    <div class="flex gap-4 mt-8"><button onclick="ModalSystem.hide()" class="flex-1 py-3 rounded-xl border border-red-500/50 text-red-400 font-semibold">Batal</button><button onclick="submitOrder()" class="flex-1 py-3 rounded-xl bg-neon-blue text-coffee-900 font-bold shadow-neon-blue hover:shadow-neon-blue-hover transition-all">Kirim Pesanan</button></div>
+                    <div class="text-center mb-6">
+                        <div class="w-16 h-16 rounded-full bg-neon-blue/10 flex items-center justify-center mx-auto mb-4 border border-neon-blue">
+                            <i class="fas fa-check-circle text-3xl text-neon-blue"></i>
+                        </div>
+                        <h2 class="text-2xl font-bold text-white">Konfirmasi Pemesanan</h2>
+                        <p class="text-gray-400 mt-2">Total tagihan Anda: <span class="text-neon-blue font-bold text-xl">${formatRp(finalTotal)}</span></p>
+                    </div>
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Nama Pemesan (Wajib)</label>
+                        <input type="text" id="customer-name" placeholder="Masukan Nama Anda" required class="glow-input w-full bg-coffee-900 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-neon-blue">
+                    </div>
+                    <div class="flex gap-4 mt-8">
+                        <button onclick="ModalSystem.hide()" class="flex-1 py-3 rounded-xl border border-red-500/50 text-red-400 font-semibold">Batal</button>
+                        <button onclick="submitOrder()" class="flex-1 py-3 rounded-xl bg-neon-blue text-coffee-900 font-bold shadow-neon-blue hover:shadow-neon-blue-hover transition-all">Kirim Pesanan</button>
+                    </div>
                 </div>
             `);
         }
 
         function submitOrder() {
-            const emailInput = document.getElementById('customer-email').value;
-            ModalSystem.hide(); processOrderSubmission(emailInput);
-        }
-
-        function showSuccessModal() {
-            ModalSystem.show(`<div class="glass-panel p-10 rounded-3xl w-11/12 max-sm text-center relative animate-fade-in shadow-neon-blue border-neon-blue/20"><div class="animate-float"><i class="fas fa-mug-hot text-6xl text-neon-blue mb-6"></i></div><h2 class="text-3xl font-black text-white mb-2">PESANAN TERKIRIM!</h2><p class="text-gray-300 mb-6">Barista dan dapur kami sedang memproses pesanan lezat Anda.</p><p class="text-sm text-neon-blue font-bold uppercase tracking-wider">Silakan bersantai di mejamu.</p></div>`);
-            setTimeout(() => { ModalSystem.hide(); navigateTo('table', AppState.currentTable); }, 5000);
+            const nameInput = document.getElementById('customer-name').value.trim();
+            if(!nameInput) {
+                showCustomToast("Nama Pemesan wajib diisi!", "error");
+                return;
+            }
+            const isTakeAway = AppState.currentTable === "TAKE-AWAY";
+            ModalSystem.hide(); 
+            processOrderSubmission(nameInput, isTakeAway);
         }
 
         function toggleFullscreen() {
@@ -921,9 +797,9 @@
         }
 
         /**
-         * ==========================================
-         * 11. LANDING & DASHBOARD ADMIN UTAMA
-         * ==========================================
+         * =======================================================================
+         * 10. LANDING & OTORISASI DASHBOARD ADMIN UTAMA
+         * =======================================================================
          */
         function renderLandingPage() {
             document.getElementById('app').innerHTML = `
@@ -931,11 +807,29 @@
                     <div class="glass-panel p-10 rounded-3xl max-w-md w-full text-center z-10 border-neon-blue/25 shadow-neon-blue animate-fade-in">
                         <i class="fas fa-bolt text-5xl text-neon-blue mb-6 animate-pulse"></i>
                         <h1 class="text-3xl font-black text-white mb-2 tracking-widest uppercase">SMART KIOSK <span class="text-neon-blue">POS</span></h1>
-                        <p class="text-gray-400 text-sm mb-8">Pilih mode operasional perangkat ini.</p>
+                        <p class="text-gray-400 text-sm mb-8">Silakan pilih akses meja atau bawa pulang.</p>
+                        
                         <div class="space-y-4">
-                            <button onclick="navigateTo('admin')" class="w-full py-4 rounded-xl border border-neon-blue/30 text-white hover:bg-neon-blue/10 transition-colors flex items-center justify-center gap-3"><i class="fas fa-user-shield text-neon-blue"></i> Masuk Dashboard Admin</button>
-                            <div class="relative"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div><div class="relative flex justify-center text-sm"><span class="px-3 text-gray-400 bg-[#1e1814] rounded-full">Atau buka meja</span></div></div>
-                            <div class="grid grid-cols-3 gap-2">${Array.from({length: AppState.settings.numTables || 6}, (_, i) => `<button onclick="navigateTo('table', 'M-${i+1}')" class="glass-button py-3 rounded-lg text-neon-blue font-bold text-sm">M-${i+1}</button>`).join('')}</div>
+                            <button onclick="navigateTo('table', 'TAKE-AWAY')" class="w-full py-4 rounded-xl bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 font-black hover:scale-105 transition-all flex items-center justify-center gap-3 shadow-neon-blue">
+                                <i class="fas fa-bag-shopping"></i> PESAN TAKE AWAY (BAWA PULANG)
+                            </button>
+
+                            <div class="relative py-2">
+                                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div>
+                                <div class="relative flex justify-center text-sm"><span class="px-3 text-gray-400 bg-[#1e1814] rounded-full text-xs">ATAU PILIH NOMOR MEJA</span></div>
+                            </div>
+
+                            <div class="grid grid-cols-3 gap-2 overflow-y-auto max-h-48 pr-1">
+                                ${Array.from({length: AppState.settings.numTables || 6}, (_, i) => `
+                                    <button onclick="navigateTo('table', 'M-${i+1}')" class="glass-button py-2.5 rounded-lg text-neon-blue font-bold text-sm">Meja M-${i+1}</button>
+                                `).join('')}
+                            </div>
+
+                            <div class="pt-4 border-t border-white/10">
+                                <button onclick="navigateTo('admin')" class="text-gray-500 hover:text-neon-blue transition-colors text-xs font-bold flex items-center justify-center gap-1.5 mx-auto">
+                                    <i class="fas fa-user-shield"></i> Akses Staf Kasir
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>`;
@@ -954,7 +848,18 @@
             window.checkAdminLogin = () => { if(document.getElementById('admin-login-pin').value === AppState.settings.adminPin) renderAdminDashboard(); else showCustomToast('PIN Kasir Salah!', 'error'); };
         }
 
-        function renderAdminDashboard() {
+        async function renderAdminDashboard() {
+            // Ambil data terbaru dari Cloudflare Worker
+            const data = await syncToCloud('get_initial_data');
+            if (data && !data.error) {
+                AppState.products = data.products || [];
+                AppState.categories = data.categories || [];
+                AppState.settings = data.settings || {};
+                AppState.activeOrders = data.activeOrders || [];
+                AppState.orderHistory = data.orderHistory || [];
+                AppState.tablesStatus = data.tablesStatus || {};
+            }
+
             document.getElementById('app').innerHTML = `
                 <div class="flex flex-col h-full bg-coffee-900 relative overflow-hidden w-full">
                     <header class="glass-panel border-b border-white/5 px-6 py-4 flex flex-wrap justify-between items-center z-20 gap-4">
@@ -970,13 +875,10 @@
 
                         <nav class="flex items-center gap-1.5 bg-black/40 p-1.5 rounded-2xl border border-white/5">
                             <button onclick="switchAdminTab('dashboard')" id="tab-dashboard" class="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold">
-                                <i class="fas fa-chart-pie"></i> Dashboard Antrian
+                                <i class="fas fa-chart-pie"></i> Sesi Meja & Antrian
                             </button>
                             <button onclick="switchAdminTab('products')" id="tab-products" class="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold">
                                 <i class="fas fa-box"></i> Menu & Kategori
-                            </button>
-                            <button onclick="switchAdminTab('laporan')" id="tab-laporan" class="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold">
-                                <i class="fas fa-wallet"></i> Laporan Keuangan
                             </button>
                             <button onclick="switchAdminTab('settings')" id="tab-settings" class="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold">
                                 <i class="fas fa-sliders"></i> Pengaturan & BYOD Link
@@ -1001,7 +903,7 @@
             window.switchAdminTab = (tab) => {
                 const act = 'bg-neon-blue/15 text-neon-blue border border-neon-blue/20 font-semibold shadow-neon-blue'; 
                 const inact = 'text-gray-400 hover:bg-white/5 hover:text-white border border-transparent';
-                ['dashboard','products','laporan','settings'].forEach(t => {
+                ['dashboard','products','settings'].forEach(t => {
                     const btn = document.getElementById('tab-'+t);
                     if (btn) btn.className = `flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all ${tab === t ? act : inact}`;
                 });
@@ -1009,20 +911,19 @@
                 const c = document.getElementById('admin-content');
                 if (tab === 'dashboard') renderAdminMainDashboard(c); 
                 else if (tab === 'products') renderAdminProducts(c); 
-                else if (tab === 'laporan') renderAdminFinanceReport(c);
                 else renderAdminSettings(c);
             };
 
-            window.toggleStoreStatus = () => {
+            window.toggleStoreStatus = async () => {
                 const currentStatus = AppState.settings.storeStatus || 'open';
                 const nextStatus = currentStatus === 'open' ? 'closed' : 'open';
                 
                 showCustomConfirm(
                     nextStatus === 'closed' ? "Tutup Toko Sekarang?" : "Buka Toko Sekarang?",
                     nextStatus === 'closed' ? "Semua pemesanan pelanggan melalui HP dinonaktifkan sementara." : "Pelanggan dapat memesan kembali.",
-                    () => {
+                    async () => {
                         AppState.settings.storeStatus = nextStatus;
-                        DatabaseManager.syncState();
+                        await syncToCloud('save_settings', AppState.settings);
                         updateStoreBadgeDisplay();
                         showCustomToast(nextStatus === 'open' ? "Outlet berhasil BUKA!" : "Outlet berhasil TUTUP!");
                     }
@@ -1045,49 +946,67 @@
         }
 
         function renderAdminMainDashboard(container) {
-            const pend = AppState.activeOrders.filter(o => o.status === 'pending');
-            const cooking = AppState.activeOrders.filter(o => o.status === 'cooking');
-            const served = AppState.activeOrders.filter(o => o.status === 'served');
-            
-            const totalAntrian = AppState.activeOrders.filter(o => o.status !== 'completed').length;
-            const comp = AppState.orderHistory.filter(o => o.status === 'completed');
-            const totalRev = comp.reduce((s, o) => s + o.total, 0);
+            const activeOrders = AppState.activeOrders || [];
+            const completedOrders = AppState.orderHistory || [];
+            const tablesStatus = AppState.tablesStatus || {};
 
             container.innerHTML = `
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                    <div class="glass-panel p-6 rounded-2xl border-l-4 border-neon-blue flex items-center justify-between">
-                        <div><h3 class="text-gray-400 text-xs font-medium mb-1">Pesanan Aktif (Dapur)</h3><p class="text-3xl font-black text-white">${totalAntrian}</p></div>
-                        <i class="fas fa-fire-burner text-3xl text-neon-blue/40"></i>
-                    </div>
-                    <div class="glass-panel p-6 rounded-2xl border-l-4 border-neon-purple flex items-center justify-between">
-                        <div><h3 class="text-gray-400 text-xs font-medium mb-1">Transaksi Selesai</h3><p class="text-3xl font-black text-white">${comp.length}</p></div>
-                        <i class="fas fa-receipt text-3xl text-neon-purple/40"></i>
-                    </div>
-                    <div class="glass-panel p-6 rounded-2xl border-l-4 border-yellow-500 flex items-center justify-between">
-                        <div><h3 class="text-gray-400 text-xs font-medium mb-1">Total Omset</h3><p class="text-3xl font-black text-white">${formatRp(totalRev)}</p></div>
-                        <i class="fas fa-sack-dollar text-3xl text-yellow-500/40"></i>
-                    </div>
-                </div>
-
-                <div class="glass-panel rounded-2xl overflow-hidden border border-white/5 mb-8">
-                    <div class="p-4 border-b border-white/5 bg-black/20 flex flex-wrap justify-between items-center gap-3">
-                        <h3 class="font-bold text-white"><i class="fas fa-tablet-screen-button text-neon-blue mr-2"></i> Status Meja Pelanggan</h3>
+                <div class="glass-panel rounded-2xl overflow-hidden border border-white/5 mb-8 animate-fade-in">
+                    <div class="p-4 border-b border-white/5 bg-black/20 flex justify-between items-center">
+                        <h3 class="font-bold text-white"><i class="fas fa-tablet-screen-button text-neon-blue mr-2"></i>Status Layar Sesi Pelanggan</h3>
+                        <span class="text-xs text-gray-400">Kasir memegang kontrol penuh untuk merestart sesi / menendang meja</span>
                     </div>
                     <div class="p-5 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                        
+                        ${(() => {
+                            const ta = tablesStatus['TAKE-AWAY'] || { status: 'vacant' };
+                            let statusColor = "border-neon-green/30 bg-neon-green/5";
+                            let statusText = "Ready / Kosong";
+                            let statusTextClass = "text-neon-green";
+                            
+                            if (ta.status === 'locked') {
+                                statusColor = "border-yellow-500/30 bg-yellow-500/5";
+                                statusText = "Menunggu Bayar";
+                                statusTextClass = "text-yellow-500";
+                            } else if (ta.status === 'done') {
+                                statusColor = "border-neon-purple/40 bg-neon-purple/5";
+                                statusText = "Nota Selesai";
+                                statusTextClass = "text-neon-purple";
+                            }
+
+                            return `
+                                <div class="border ${statusColor} rounded-2xl p-4 flex flex-col justify-between items-center text-center">
+                                    <div><span class="text-[9px] font-bold text-gray-400">TAKE AWAY</span><p class="text-xl font-black ${statusTextClass}">🥡 Bawa Pulang</p></div>
+                                    <div class="mt-4 w-full">
+                                        <span class="block text-[9px] ${statusTextClass} font-black uppercase mb-2.5">${statusText}</span>
+                                        ${ta.status !== 'vacant' ? `
+                                            <button onclick="adminResetMeja('TAKE-AWAY')" class="w-full py-1.5 bg-neon-purple/10 hover:bg-neon-purple hover:text-coffee-900 text-neon-purple text-[10px] font-black rounded-xl border border-neon-purple/30 transition-all uppercase"><i class="fas fa-trash-can mr-1"></i> Kosongkan</button>
+                                        ` : `
+                                            <div class="w-full py-1.5 bg-white/5 border border-white/5 text-[10px] text-gray-500 rounded-xl cursor-not-allowed">Ready</div>
+                                        `}
+                                    </div>
+                                </div>
+                            `;
+                        })()}
+
                         ${Array.from({length: AppState.settings.numTables || 6}, (_, i) => {
                             const tId = `M-${i+1}`;
-                            const status = TableStatusManager.getStatus(tId);
+                            const ts = tablesStatus[tId] || { status: 'vacant' };
                             let statusColor = "border-neon-green/30 bg-neon-green/5";
                             let statusText = "Kosong";
                             let statusTextClass = "text-neon-green";
                             
-                            if (status === 'ordering') {
+                            if (ts.status === 'ordering') {
                                 statusColor = "border-yellow-500/30 bg-yellow-500/5";
                                 statusText = "Sedang Memilih";
                                 statusTextClass = "text-yellow-500";
-                            } else if (status === 'locked') {
+                            } else if (ts.status === 'locked') {
+                                statusColor = "border-red-500/30 bg-red-500/5";
+                                statusText = "Pesanan Dikirim";
+                                statusTextClass = "text-red-400";
+                            } else if (ts.status === 'done') {
                                 statusColor = "border-neon-purple/40 bg-neon-purple/5";
-                                statusText = "Terkunci";
+                                statusText = "Nota Digital Aktif";
                                 statusTextClass = "text-neon-purple";
                             }
 
@@ -1096,8 +1015,8 @@
                                     <div><span class="text-[9px] font-bold text-gray-400">MEJA</span><p class="text-2xl font-black ${statusTextClass}">${tId}</p></div>
                                     <div class="mt-4 w-full">
                                         <span class="block text-[9px] ${statusTextClass} font-black uppercase mb-2.5">${statusText}</span>
-                                        ${status === 'locked' || status === 'ordering' ? `
-                                            <button onclick="adminResetMeja('${tId}')" class="w-full py-1.5 bg-neon-purple/10 hover:bg-neon-purple hover:text-coffee-900 text-neon-purple text-[10px] font-black rounded-xl border border-neon-purple/30 transition-all uppercase"><i class="fas fa-trash mr-1"></i> Reset</button>
+                                        ${ts.status !== 'vacant' ? `
+                                            <button onclick="adminResetMeja('${tId}')" class="w-full py-1.5 bg-neon-purple/10 hover:bg-neon-purple hover:text-coffee-900 text-neon-purple text-[10px] font-black rounded-xl border border-neon-purple/30 transition-all uppercase"><i class="fas fa-trash-can mr-1"></i> Kosongkan</button>
                                         ` : `
                                             <div class="w-full py-1.5 bg-white/5 border border-white/5 text-[10px] text-gray-500 rounded-xl cursor-not-allowed">Standby</div>
                                         `}
@@ -1107,77 +1026,56 @@
                     </div>
                 </div>
 
-                <div class="glass-panel rounded-2xl overflow-hidden border border-white/5">
-                    <div class="p-4 border-b border-white/5 bg-black/20 flex justify-between items-center"><h3 class="font-bold text-white">Antrian Alur Pesanan</h3></div>
-                    ${AppState.activeOrders.filter(o => o.status !== 'completed').length === 0 ? `
-                        <div class="p-12 text-center text-gray-500"><p class="text-sm">Semua pesanan selesai diproses. Dapur bersih!</p></div>
+                <div class="glass-panel rounded-2xl overflow-hidden border border-white/5 animate-fade-in">
+                    <div class="p-4 border-b border-white/5 bg-black/20 flex justify-between items-center">
+                        <h3 class="font-bold text-white"><i class="fas fa-cash-register text-neon-blue mr-2"></i>Konfirmasi Pembayaran Kasir</h3>
+                    </div>
+                    ${activeOrders.length === 0 ? `
+                        <div class="p-12 text-center text-gray-500"><p class="text-sm">Tidak ada antrian pesanan aktif. Dapur dan Kasir aman!</p></div>
                     ` : `
                         <div class="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            ${AppState.activeOrders.filter(o => o.status !== 'completed').map(o => {
-                                let statusClass = "border-red-500/30";
-                                let buttonText = "Mulai Dapur";
-                                let nextStatus = "cooking";
-                                
-                                if (o.status === 'cooking') {
-                                    statusClass = "border-yellow-500/30";
-                                    buttonText = "Siap Saji";
-                                    nextStatus = "served";
-                                } else if (o.status === 'served') {
-                                    statusClass = "border-neon-purple/30";
-                                    buttonText = "Selesai & Bayar POS";
-                                    nextStatus = "completed";
-                                }
-
+                            ${activeOrders.map(o => {
                                 return `
-                                    <div class="bg-coffee-800 border ${statusClass} rounded-2xl p-5 relative flex flex-col justify-between">
-                                        <div class="absolute top-0 right-0 bg-neon-blue text-coffee-900 px-3 py-1 text-xs font-black rounded-bl-xl">MEJA ${o.table}</div>
+                                    <div class="bg-coffee-800 border border-white/5 rounded-2xl p-5 relative flex flex-col justify-between">
+                                        <div class="absolute top-0 right-0 bg-neon-blue text-coffee-900 px-3 py-1 text-xs font-black rounded-bl-xl uppercase">${o.table_id}</div>
                                         <div>
-                                            <p class="text-[10px] text-gray-400 font-mono mb-1">ID: ${o.id}</p>
-                                            <h4 class="text-lg font-bold text-white mb-3">${formatRp(o.total)}</h4>
-                                            <div class="space-y-1.5 mb-6 max-h-32 overflow-y-auto">
-                                                ${o.items.map(item => {
-                                                    const p = AppState.products.find(x => x.id === item.id);
-                                                    return `<div class="flex justify-between text-xs text-gray-300"><span>${item.qty}x ${p ? p.name : 'Produk'}</span></div>`;
-                                                }).join('')}
+                                            <p class="text-[10px] text-gray-400 font-mono mb-1">ID: ${o.order_id}</p>
+                                            <h4 class="text-base font-black text-neon-blue mb-1">👤 ${o.customer_name}</h4>
+                                            <h3 class="text-lg font-bold text-white mb-3">${formatRp(o.total_amount)}</h3>
+                                            <div class="space-y-1.5 mb-6 max-h-32 overflow-y-auto border-t border-white/5 pt-2">
+                                                ${o.items.map(item => `
+                                                    <div class="flex justify-between text-xs text-gray-300">
+                                                        <span>${item.qty}x ${item.name}</span>
+                                                    </div>
+                                                `).join('')}
                                             </div>
                                         </div>
-                                        <button onclick="updateOrderProgress('${o.id}', '${nextStatus}')" class="w-full py-2.5 bg-neon-blue/10 hover:bg-neon-blue hover:text-coffee-900 text-neon-blue text-xs font-bold rounded-xl border border-neon-blue/30 transition-all">${buttonText}</button>
+                                        <button onclick="adminSelesaikanPesanan('${o.order_id}', '${o.table_id}')" class="w-full py-2.5 bg-neon-green/10 hover:bg-neon-green hover:text-coffee-900 text-neon-green text-xs font-bold rounded-xl border border-neon-green/30 transition-all">
+                                            <i class="fas fa-check mr-1.5"></i> Selesaikan & Terbitkan Nota
+                                        </button>
                                     </div>`;
                             }).join('')}
                         </div>`}
                 </div>`;
 
-            window.adminResetMeja = (tId) => {
-                showCustomConfirm("Reset Sesi?", `Buka kembali sesi meja ${tId}?`, () => {
-                    SessionLocker.unlock(tId);
-                    TableStatusManager.setStatus(tId, 'vacant');
-                    showCustomToast(`Sesi Meja ${tId} dikosongkan!`);
-                    renderAdminMainDashboard(container);
+            window.adminResetMeja = (tableId) => {
+                showCustomConfirm("Kosongkan Sesi Meja?", `Apakah Anda yakin ingin mengosongkan sesi ${tableId}? Layar HP pelanggan akan langsung didepak kembali ke menu utama.`, async () => {
+                    const res = await syncToCloud('reset_table', { table_id: tableId });
+                    if(res && !res.error) {
+                        showCustomToast(`Sesi ${tableId} telah berhasil dikosongkan!`);
+                        renderAdminDashboard();
+                    }
                 });
             };
 
-            window.updateOrderProgress = (id, targetStatus) => {
-                const o = AppState.activeOrders.find(x => x.id === id);
-                if (o) {
-                    if (targetStatus === 'completed') {
-                        showCustomConfirm("Selesaikan Transaksi?", `Konfirmasi pembayaran untuk pesanan di Meja ${o.table}?`, () => {
-                            o.status = 'completed';
-                            AppState.orderHistory.push(o);
-                            AppState.activeOrders = AppState.activeOrders.filter(x => x.id !== id);
-                            
-                            SessionLocker.unlock(o.table);
-                            TableStatusManager.setStatus(o.table, 'vacant');
-                            
-                            DatabaseManager.syncState();
-                            showCustomToast("Pembayaran tervalidasi di kasir POS!");
-                            renderAdminMainDashboard(container);
-                        });
-                    } else {
-                        o.status = targetStatus;
-                        DatabaseManager.syncState();
-                        renderAdminMainDashboard(container);
+            window.adminSelesaikanPesanan = (orderId, tableId) => {
+                showCustomConfirm("Konfirmasi Pembayaran?", "Kasir memvalidasi pembayaran pelanggan ini. Layar HP pelanggan akan langsung berubah menjadi Nota Digital Lunas secara real-time.", async () => {
+                    const res = await syncToCloud('update_order_status', { order_id: orderId, status: 'completed', table_id: tableId });
+                    if (res && !res.error) {
+                        showCustomToast("Transaksi Lunas! Sesi Meja dipindahkan ke halaman Nota Digital.");
+                        renderAdminDashboard();
                     }
-                }
+                });
             };
         }
 
@@ -1194,7 +1092,7 @@
                                 ${AppState.categories.map(cat => `
                                     <div class="flex justify-between items-center bg-white/5 rounded-xl px-4 py-2">
                                         <span class="text-sm font-medium text-gray-200">${cat}</span>
-                                        <button onclick="deleteCategoryAction('${cat}')" class="text-red-400 text-xs"><i class="fas fa-trash-can"></i></button>
+                                        <button onclick="deleteCategoryAction('${cat}')" class="text-red-400 text-xs hover:text-red-300"><i class="fas fa-trash-can"></i></button>
                                     </div>
                                 `).join('')}
                             </div>
@@ -1205,7 +1103,7 @@
                         <div class="glass-panel p-6 rounded-2xl border border-white/5">
                             <div class="flex justify-between items-center mb-6">
                                 <h3 class="text-lg font-bold text-white">Daftar Menu Hidangan</h3>
-                                <button onclick="addNewProductModal()" class="px-4 py-2 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 text-xs font-black rounded-xl">Tambah Baru</button>
+                                <button onclick="addNewProductModal()" class="px-4 py-2 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 text-xs font-black rounded-xl hover:scale-105 transition-all">Tambah Menu Baru</button>
                             </div>
                             <div class="overflow-x-auto">
                                 <table class="w-full text-left text-sm text-gray-300">
@@ -1218,7 +1116,9 @@
                                                 <td class="px-6 py-4 flex items-center gap-3"><span class="font-medium text-white">${p.name}</span></td>
                                                 <td class="px-6 py-4">${p.category}</td>
                                                 <td class="px-6 py-4 font-mono text-neon-blue">${formatRp(p.price)}</td>
-                                                <td class="px-6 py-4 text-center"><button onclick="deleteProductAction('${p.id}')" class="text-red-400"><i class="fas fa-trash"></i></button></td>
+                                                <td class="px-6 py-4 text-center">
+                                                    <button onclick="deleteProductAction('${p.id}')" class="text-red-400 hover:text-red-300"><i class="fas fa-trash"></i></button>
+                                                </td>
                                             </tr>`).join('')}
                                     </tbody>
                                 </table>
@@ -1231,7 +1131,7 @@
                 ModalSystem.show(`
                     <div class="glass-panel p-8 rounded-3xl w-11/12 max-w-sm border-neon-blue/20 shadow-neon-blue">
                         <h3 class="text-lg font-bold text-white mb-4">Tambah Kategori</h3>
-                        <input type="text" id="new-cat-name" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2 mb-6">
+                        <input type="text" id="new-cat-name" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2 mb-6 focus:outline-none">
                         <div class="flex gap-2">
                             <button onclick="ModalSystem.hide()" class="flex-1 py-2 rounded-lg border border-white/10 text-gray-400">Batal</button>
                             <button onclick="saveNewCategory()" class="flex-1 py-2 rounded-lg bg-neon-blue text-coffee-900 font-bold">Simpan</button>
@@ -1240,19 +1140,19 @@
                 `);
             };
 
-            window.saveNewCategory = () => {
+            window.saveNewCategory = async () => {
                 const name = document.getElementById('new-cat-name').value.trim();
                 if (!name) return;
-                AppState.categories.push(name);
-                DatabaseManager.syncState();
+                await syncToCloud('add_category', { name });
                 ModalSystem.hide();
-                renderAdminProducts(container);
+                renderAdminDashboard();
             };
 
-            window.deleteCategoryAction = (name) => {
-                AppState.categories = AppState.categories.filter(c => c !== name);
-                DatabaseManager.syncState();
-                renderAdminProducts(container);
+            window.deleteCategoryAction = async (name) => {
+                showCustomConfirm("Hapus Kategori?", `Apakah Anda yakin ingin menghapus kategori "${name}"?`, async () => {
+                    await syncToCloud('delete_category', { name });
+                    renderAdminDashboard();
+                });
             };
 
             window.addNewProductModal = () => {
@@ -1272,40 +1172,32 @@
                 `);
             };
 
-            window.saveNewProduct = () => {
+            window.saveNewProduct = async () => {
                 const name = document.getElementById('new-prod-name').value.trim();
                 const price = parseInt(document.getElementById('new-prod-price').value);
                 const category = document.getElementById('new-prod-cat').value;
                 if (!name || isNaN(price)) return;
 
-                AppState.products.push({ id: 'P-' + Math.floor(Math.random() * 100000), name, price, category, status: 'ready', image: 'fa-cookie' });
-                DatabaseManager.syncState();
+                const payload = { 
+                    id: 'P-' + Math.floor(Math.random() * 100000), 
+                    name, 
+                    price, 
+                    category, 
+                    status: 'ready', 
+                    image: 'fa-cookie' 
+                };
+
+                await syncToCloud('add_product', payload);
                 ModalSystem.hide();
-                renderAdminProducts(container);
+                renderAdminDashboard();
             };
 
-            window.deleteProductAction = (id) => {
-                AppState.products = AppState.products.filter(x => x.id !== id);
-                DatabaseManager.syncState();
-                renderAdminProducts(container);
+            window.deleteProductAction = async (id) => {
+                showCustomConfirm("Hapus Produk?", "Apakah Anda yakin ingin menghapus menu hidangan ini?", async () => {
+                    await syncToCloud('delete_product', { id });
+                    renderAdminDashboard();
+                });
             };
-        }
-
-        function renderAdminFinanceReport(container) {
-            const completed = AppState.orderHistory.filter(o => o.status === 'completed');
-            let grossSales = completed.reduce((sum, o) => sum + o.total, 0);
-            
-            container.innerHTML = `
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                    <div class="glass-panel p-6 rounded-2xl border-l-4 border-neon-blue">
-                        <span class="text-gray-400 text-xs">Omset Hari Ini (Gross)</span>
-                        <p class="text-2xl font-black text-white mt-2">${formatRp(grossSales)}</p>
-                    </div>
-                    <div class="glass-panel p-6 rounded-2xl border-l-4 border-neon-purple">
-                        <span class="text-gray-400 text-xs">Total Transaksi</span>
-                        <p class="text-2xl font-black text-white mt-2">${completed.length}</p>
-                    </div>
-                </div>`;
         }
 
         function renderAdminSettings(container) {
@@ -1314,31 +1206,8 @@
             const customerLink = baseUrl;
 
             container.innerHTML = `
-                <div class="max-w-2xl space-y-6 pb-20">
-                    <div class="glass-panel p-6 rounded-2xl border border-neon-blue/30">
-                        <h3 class="text-lg font-bold text-white mb-2">Manajemen Banner Promo</h3>
-                        <div class="space-y-2 mb-4" id="promos-admin-list">
-                            ${(AppState.settings.promos || []).map((url, i) => `
-                                <div class="flex items-center justify-between bg-black/40 rounded-xl p-2 text-xs">
-                                    <span class="truncate pr-4">${url}</span>
-                                    <button onclick="removePromoLink(${i})" class="text-red-400"><i class="fas fa-trash-can"></i></button>
-                                </div>`).join('')}
-                        </div>
-                        <div class="flex gap-2">
-                            <input type="text" id="new-promo-url" placeholder="https://..." class="glow-input flex-1 bg-coffee-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white">
-                            <button onclick="addNewPromoLink()" class="px-4 py-2 bg-neon-blue text-coffee-900 rounded-xl text-xs font-bold">Tambah</button>
-                        </div>
-                    </div>
-
-                    <div class="glass-panel p-6 rounded-2xl border border-white/5">
-                        <h3 class="text-lg font-bold text-white mb-4">Pengaturan Web App</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div><label class="block text-sm text-gray-400">Nama Toko</label><input type="text" id="setting-store-name" value="${AppState.settings.storeName}" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2"></div>
-                            <div><label class="block text-sm text-gray-400">Jumlah Meja</label><input type="number" id="setting-tables" value="${AppState.settings.numTables}" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2"></div>
-                        </div>
-                    </div>
-
-                    <div class="glass-panel p-6 rounded-2xl border border-neon-purple/30">
+                <div class="max-w-2xl space-y-6 pb-20 animate-fade-in">
+                    <div class="glass-panel p-6 rounded-2xl border border-neon-purple/30 shadow-neon-purple">
                         <h3 class="text-lg font-bold text-white mb-4"><i class="fas fa-qrcode text-neon-purple mr-2"></i>Link Akses & BYOD (Untuk Barcode/QR)</h3>
                         <div class="space-y-4">
                             <div>
@@ -1356,7 +1225,7 @@
                                 </div>
                             </div>
                             <div class="pt-3 border-t border-white/10 mt-2">
-                                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Generator Link Meja Khusus (Untuk Stiker QR Code di Meja)</label>
+                                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Generator Link Meja Khusus (Stiker QR Meja Fisik)</label>
                                 <div class="flex gap-2">
                                     <select id="qr-table-selector" onchange="updateTableLink()" class="bg-coffee-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none">
                                         ${Array.from({length: AppState.settings.numTables || 6}, (_, i) => `<option value="M-${i+1}">M-${i+1}</option>`).join('')}
@@ -1369,9 +1238,34 @@
                         </div>
                     </div>
 
+                    <div class="glass-panel p-6 rounded-2xl border border-neon-blue/30 shadow-neon-blue/20">
+                        <h3 class="text-lg font-bold text-white mb-2">Manajemen Banner Promo (Sisi HP)</h3>
+                        <div class="space-y-2 mb-4 animate-fade-in" id="promos-admin-list">
+                            ${(AppState.settings.promos || []).map((url, i) => `
+                                <div class="flex items-center justify-between bg-black/40 rounded-xl p-2.5 text-xs">
+                                    <span class="truncate pr-4 font-mono text-gray-400">${url}</span>
+                                    <button onclick="removePromoLink(${i})" class="text-red-400 hover:text-red-300"><i class="fas fa-trash-can"></i></button>
+                                </div>`).join('')}
+                        </div>
+                        <div class="flex gap-2">
+                            <input type="text" id="new-promo-url" placeholder="Masukan link gambar (https://...)" class="glow-input flex-1 bg-coffee-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none">
+                            <button onclick="addNewPromoLink()" class="px-4 py-2 bg-neon-blue text-coffee-900 rounded-xl text-xs font-bold hover:shadow-neon-blue">Tambah</button>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel p-6 rounded-2xl border border-white/5">
+                        <h3 class="text-lg font-bold text-white mb-4">Pengaturan Web App</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div><label class="block text-sm text-gray-400 mb-1">Nama Toko</label><input type="text" id="setting-store-name" value="${AppState.settings.storeName}" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2 text-white"></div>
+                            <div><label class="block text-sm text-gray-400 mb-1">Jumlah Meja</label><input type="number" id="setting-tables" value="${AppState.settings.numTables}" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2 text-white"></div>
+                            <div><label class="block text-sm text-gray-400 mb-1">Discord Webhook Dapur</label><input type="text" id="setting-webhook-kitchen" value="${AppState.settings.webhookKitchen || ''}" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2 text-white"></div>
+                            <div><label class="block text-sm text-gray-400 mb-1">Discord Webhook Kasir</label><input type="text" id="setting-webhook-cashier" value="${AppState.settings.webhookCashier || ''}" class="glow-input w-full bg-coffee-900 border border-white/10 rounded-xl px-4 py-2 text-white"></div>
+                        </div>
+                    </div>
+
                     <div class="flex justify-end gap-2">
-                        <button onclick="BackupManager.exportJSON()" class="bg-coffee-800 text-white px-4 py-2 rounded-xl text-sm font-bold">Ekspor Database (.JSON)</button>
-                        <button onclick="saveSettings()" class="bg-neon-blue text-coffee-900 px-6 py-2 rounded-xl text-sm font-bold">Simpan</button>
+                        <button onclick="BackupManager.exportJSON()" class="bg-coffee-800 hover:bg-coffee-700 text-white px-4 py-2 rounded-xl text-sm font-bold border border-white/5">Ekspor Database (.JSON)</button>
+                        <button onclick="saveSettings()" class="bg-neon-blue text-coffee-900 px-6 py-2 rounded-xl text-sm font-black shadow-neon-blue hover:shadow-neon-blue-hover transition-all">Simpan Konfigurasi</button>
                     </div>
                 </div>`;
 
@@ -1380,22 +1274,23 @@
                 if (!url) return;
                 if (!AppState.settings.promos) AppState.settings.promos = [];
                 AppState.settings.promos.push(url);
-                DatabaseManager.syncState();
-                renderAdminSettings(container);
+                syncToCloud('save_settings', AppState.settings).then(() => renderAdminDashboard());
             };
 
             window.removePromoLink = (index) => {
                 AppState.settings.promos.splice(index, 1);
-                DatabaseManager.syncState();
-                renderAdminSettings(container);
+                syncToCloud('save_settings', AppState.settings).then(() => renderAdminDashboard());
             };
 
-            window.saveSettings = () => {
+            window.saveSettings = async () => {
                 AppState.settings.storeName = document.getElementById('setting-store-name').value || 'Cyber Brew';
                 AppState.settings.numTables = parseInt(document.getElementById('setting-tables').value);
-                DatabaseManager.syncState();
-                showCustomToast('Pengaturan disimpan!');
-                setTimeout(() => navigateTo('admin'), 1000);
+                AppState.settings.webhookKitchen = document.getElementById('setting-webhook-kitchen').value;
+                AppState.settings.webhookCashier = document.getElementById('setting-webhook-cashier').value;
+                
+                await syncToCloud('save_settings', AppState.settings);
+                showCustomToast('Seluruh konfigurasi berhasil disimpan!');
+                setTimeout(() => renderAdminDashboard(), 1000);
             };
 
             window.copyLinkToClipboard = (text) => {
@@ -1403,9 +1298,9 @@
                 tempInput.value = text;
                 document.body.appendChild(tempInput);
                 tempInput.select();
-                document.execCommand("copy");
+                document.execCommand("copy"); // Fallback iFrame
                 document.body.removeChild(tempInput);
-                showCustomToast("Link berhasil disalin!");
+                showCustomToast("Link berhasil disalin ke clipboard!");
             };
 
             window.updateTableLink = () => {
@@ -1419,26 +1314,26 @@
             };
         }
 
+        /**
+         * ==========================================
+         * 11. ENTRY POINT WINDOW ONLOAD
+         * ==========================================
+         */
         window.onload = async () => {
-            // Registrasi Service Worker untuk PWA Offline
+            // Service Worker Offline Handler
             if ('serviceWorker' in navigator) {
-                // Check if the current protocol is supported (http or https)
                 if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
                     try {
                         await navigator.serviceWorker.register('sw.js');
-                        console.log('Service Worker terdaftar secara sukses untuk operasi PWA offline!');
+                        console.log('Service Worker PWA Terdaftar.');
                     } catch (e) {
-                        console.error('Pendaftaran Service Worker gagal:', e);
+                        console.error('Service Worker Gagal:', e);
                     }
-                } else {
-                    console.log('Registrasi Service Worker dilewati: Protokol tidak didukung (mis. dijalankan dari sistem file lokal atau preview).');
                 }
             }
 
-            const isSecure = await SecuritySystem.lifecycleCheck();
-            if (isSecure) {
-                initRouter();
-            }
+            // Jalankan Verifikasi Router
+            initRouter();
         };
 
     </script>

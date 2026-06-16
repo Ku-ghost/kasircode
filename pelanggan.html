@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Smart Kiosk - Menu Pesanan</title>
+    
+    <!-- PWA Meta Tags & Theme Color -->
+    <meta name="theme-color" content="#120E0B">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Tailwind Config untuk Tema Cyber Espresso Premium -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        coffee: {
+                            900: '#120E0B', 
+                            850: '#171310', 
+                            800: '#1E1814', 
+                            700: '#2A231E', 
+                        },
+                        neon: {
+                            blue: '#00f0ff',   
+                            purple: '#bc13fe', 
+                            green: '#39ff14'   
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                    boxShadow: {
+                        'neon-blue': '0 0 15px rgba(0, 240, 255, 0.4)',
+                        'neon-blue-hover': '0 0 25px rgba(0, 240, 255, 0.7)',
+                        'neon-purple': '0 0 15px rgba(188, 19, 254, 0.4)',
+                        'neon-purple-hover': '0 0 25px rgba(188, 19, 254, 0.7)',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(0, 240, 255, 0.3); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(0, 240, 255, 0.6); }
+
+        .glass-panel {
+            background: rgba(30, 24, 20, 0.75);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 240, 255, 0.15);
+        }
+
+        .glass-button {
+            background: rgba(0, 240, 255, 0.08);
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(0, 240, 255, 0.3);
+            transition: all 0.3s ease;
+        }
+        
+        .glass-button:hover:not(:disabled) {
+            background: rgba(0, 240, 255, 0.2);
+            border-color: rgba(0, 240, 255, 0.8);
+            box-shadow: 0 0 15px rgba(0, 240, 255, 0.5);
+        }
+
+        .glow-input:focus {
+            border-color: #00f0ff;
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+
+        input[type="number"]::-webkit-inner-spin-button, 
+        input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        
+        body { user-select: none; }
+    </style>
+</head>
+<body class="bg-coffee-900 text-gray-200 h-screen w-screen overflow-hidden antialiased">
+
+    <!-- Kontainer Utama Aplikasi -->
+    <div id="app" class="h-full w-full relative"></div>
+    
+    <!-- Kontainer Custom Modals -->
+    <div id="modal-container" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"></div>
+
+    <script>
+        /**
+         * =======================================================================
+         * 1. PARAMETER API & APP IDENTIFICATION
+         * =======================================================================
+         */
+        const APP_ID = "SMARTPOS_UKM_01";
+        const API_BASE_URL = "https://kasirmandiri.ku-ghost.workers.dev/api/gate";
+
+        /**
+         * SYSTEM TOAST, CONFIRMATION & CUSTOM MODAL
+         */
+        function showCustomToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `fixed bottom-24 left-1/2 -translate-x-1/2 z-50 glass-panel px-6 py-3 rounded-xl border flex items-center gap-3 animate-fade-in shadow-neon-blue ${
+                type === 'error' ? 'border-red-500/50 text-red-400 bg-red-950/90' : 'border-neon-blue/50 text-neon-blue bg-[#1e1814]/90'
+            }`;
+            toast.innerHTML = `<i class="fas ${type === 'error' ? 'fa-triangle-exclamation' : 'fa-check-circle'}"></i> <span class="font-bold text-sm tracking-wide">${message}</span>`;
+            document.body.appendChild(toast);
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'transition-opacity', 'duration-300');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        const DatabaseManager = {
+            dbKey: APP_ID + '_local_db',
+            init: function() {
+                let localData = localStorage.getItem(this.dbKey);
+                if (!localData) {
+                    const defaultDB = {
+                        settings: {
+                            storeName: 'Kasir Mandiri Kiosk', 
+                            storeSlogan: 'Sistem Pemesanan Cepat & Mudah', 
+                            taxRate: 0.10,
+                            numTables: 12,
+                            storeStatus: 'open', 
+                            promos: [
+                                "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80",
+                                "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=800&q=80"
+                            ]
+                        },
+                        categories: ['Minuman', 'Makanan', 'Snack'],
+                        products: [
+                            { id: 'P01', name: 'Signature Coffee Aren', price: 25000, category: 'Minuman', status: 'ready', image: 'fa-mug-hot' },
+                            { id: 'P02', name: 'Cyber Matcha Latte', price: 28000, category: 'Minuman', status: 'ready', image: 'fa-glass-water' },
+                            { id: 'P03', name: 'Nasi Goreng Wagyu', price: 45000, category: 'Makanan', status: 'ready', image: 'fa-bowl-food' },
+                            { id: 'P04', name: 'Truffle French Fries', price: 22000, category: 'Snack', status: 'ready', image: 'fa-plate-wheat' }
+                        ]
+                    };
+                    localStorage.setItem(this.dbKey, JSON.stringify(defaultDB));
+                    return defaultDB;
+                }
+                return JSON.parse(localData);
+            }
+        };
+
+        const savedDB = DatabaseManager.init();
+        const AppState = {
+            settings: savedDB.settings,
+            categories: savedDB.categories || ['Minuman', 'Makanan', 'Snack'],
+            products: savedDB.products,
+            cart: [],
+            currentTable: null,
+            currentTableStatus: 'vacant', 
+            activeOrderDetails: null,     
+            store_reg_name: 'kasirmandiri_ukm' 
+        };
+
+        const formatRp = (num) => 'Rp ' + num.toLocaleString('id-ID');
+
+        /**
+         * =======================================================================
+         * 2. SINKRONISASI CLOUDFLARE WORKER
+         * =======================================================================
+         */
+        async function syncToCloud(action, payload = {}) {
+            let retries = 5;
+            let delay = 1000;
+            while (retries > 0) {
+                try {
+                    const response = await fetch(API_BASE_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            app_id: APP_ID,
+                            store_reg_name: AppState.store_reg_name,
+                            action: action,
+                            payload: payload
+                        })
+                    });
+                    if (!response.ok) throw new Error("Respons Server Gagal");
+                    return await response.json();
+                } catch (err) {
+                    retries--;
+                    if (retries === 0) return { error: err.message };
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    delay *= 2;
+                }
+            }
+        }
+
+        /**
+         * =======================================================================
+         * 3. REAL-TIME SERVER POLLING & AUTOMATIC REDIRECT
+         * =======================================================================
+         */
+        let statusPollingId = null;
+
+        function startTableStatusPolling(tableId) {
+            if (statusPollingId) clearInterval(statusPollingId);
+            if (!tableId) return;
+
+            statusPollingId = setInterval(async () => {
+                const res = await syncToCloud('check_table_status', { table_id: tableId });
+                if (res && !res.error) {
+                    const prevStatus = AppState.currentTableStatus;
+                    AppState.currentTableStatus = res.status;
+                    AppState.activeOrderDetails = res.order;
+
+                    if (prevStatus !== res.status) {
+                        handleTableStatusTransition(res.status);
+                    }
+                }
+            }, 4000); 
+        }
+
+        function stopTableStatusPolling() {
+            if (statusPollingId) {
+                clearInterval(statusPollingId);
+                statusPollingId = null;
+            }
+        }
+
+        function handleTableStatusTransition(status) {
+            if (status === 'locked') {
+                renderLockedScreen();
+            } else if (status === 'done') {
+                localStorage.removeItem(APP_ID + '_locked_table_session');
+                renderDigitalReceiptScreen();
+            } else if (status === 'vacant') {
+                localStorage.removeItem(APP_ID + '_locked_table_session');
+                renderCustomerKiosk();
+            }
+        }
+
+        /**
+         * ==========================================
+         * 4. ROUTING & ANTI-TAMPER SECURE ENGINE
+         * ==========================================
+         */
+        async function initRouter() {
+            const params = new URLSearchParams(window.location.search);
+            const savedLockedTable = localStorage.getItem(APP_ID + '_locked_table_session');
+
+            // Proteksi URL: Jika parameter meja dihapus tapi ada sesi tersimpan, paksa balik!
+            if (!params.has('table')) {
+                if (savedLockedTable) {
+                    history.pushState(null, '', '?table=' + savedLockedTable);
+                    initRouter();
+                    return;
+                }
+                renderBarcodeRequiredScreen();
+                return;
+            }
+
+            const tableId = params.get('table');
+            AppState.currentTable = tableId;
+            localStorage.setItem(APP_ID + '_locked_table_session', tableId);
+
+            // Validasi asinkron langsung ke database D1 cloud
+            const res = await syncToCloud('check_table_status', { table_id: tableId });
+            if (res && !res.error) {
+                AppState.currentTableStatus = res.status;
+                AppState.activeOrderDetails = res.order;
+                
+                startTableStatusPolling(tableId);
+
+                if (AppState.settings.storeStatus === 'closed') {
+                    renderStoreClosedScreen();
+                } else if (res.status === 'locked') {
+                    renderLockedScreen();
+                } else if (res.status === 'done') {
+                    renderDigitalReceiptScreen();
+                } else {
+                    renderCustomerKiosk();
+                }
+            } else {
+                renderCustomerKiosk(); // Mode aman cadangan offline lokal
+            }
+        }
+
+        function renderStoreClosedScreen() {
+            document.getElementById('app').innerHTML = `
+                <div class="h-screen w-screen bg-coffee-900 flex flex-col items-center justify-center p-6 text-center">
+                    <div class="glass-panel p-10 rounded-3xl max-w-sm w-full border-red-500/20 shadow-neon-blue">
+                        <i class="fas fa-store-slash text-5xl text-red-500 mb-6 animate-pulse"></i>
+                        <h2 class="text-2xl font-black text-white uppercase tracking-wider mb-2">OUTLET TUTUP</h2>
+                        <p class="text-gray-300 text-sm mb-8">Maaf, saat ini outlet kami sedang tutup. Silakan hubungi staf.</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderBarcodeRequiredScreen() {
+            document.getElementById('app').innerHTML = `
+                <div class="h-screen w-screen bg-coffee-900 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
+                    <div class="glass-panel p-10 rounded-3xl max-w-md w-full border-neon-blue/20 shadow-neon-blue animate-fade-in z-10">
+                        <i class="fas fa-qrcode text-6xl text-neon-blue mb-6 animate-bounce"></i>
+                        <h2 class="text-2xl font-black text-white uppercase tracking-wider mb-2">PINDAI QR MEJA</h2>
+                        <p class="text-gray-400 text-sm mb-8 leading-relaxed">
+                            Silakan pindai QR Code yang berada di atas meja Anda untuk dapat memesan hidangan dari menu secara instan.
+                        </p>
+                        <button onclick="localStorage.setItem('${APP_ID}_locked_table_session', 'TAKE-AWAY'); window.location.href='?table=TAKE-AWAY'" class="w-full py-4 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 font-black rounded-xl text-xs hover:scale-105 transition-all shadow-neon-blue">
+                            <i class="fas fa-bag-shopping mr-2"></i> PESAN TAKE AWAY (BAWA PULANG)
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * ==========================================
+         * 5. SUBMISSION PROSES TRANSAKSI
+         * ==========================================
+         */
+        async function processOrderSubmission(customerName) {
+            if (AppState.cart.length === 0) return;
+
+            const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+            const tableId = AppState.currentTable;
+
+            let subtotal = 0;
+            const itemsPayload = AppState.cart.map(item => {
+                const prod = AppState.products.find(p => p.id === item.id);
+                subtotal += (prod ? prod.price : 0) * item.qty;
+                return {
+                    id: item.id,
+                    name: prod ? prod.name : 'Produk',
+                    qty: item.qty,
+                    price: prod ? prod.price : 0
+                };
+            });
+
+            const tax = subtotal * AppState.settings.taxRate;
+            const totalFinal = subtotal + tax;
+
+            const orderPayload = {
+                order_id: 'ORD-' + Math.floor(100000 + Math.random() * 900000),
+                table_number: tableId,
+                total_amount: totalFinal,
+                order_time: timeNow,
+                customer_name: customerName,
+                items: itemsPayload
+            };
+            
+            const response = await syncToCloud('insert_order', orderPayload);
+
+            if (response && !response.error) {
+                AppState.cart = [];
+                AppState.currentTableStatus = 'locked';
+                
+                ModalSystem.show(`
+                    <div class="glass-panel p-8 rounded-3xl w-11/12 max-w-sm text-center shadow-neon-blue border-neon-blue/20 animate-fade-in">
+                        <i class="fas fa-check-circle text-5xl text-neon-green mb-4 animate-bounce"></i>
+                        <h2 class="text-xl font-black text-white mb-4">PESANAN TERKIRIM!</h2>
+                        <p class="text-gray-300 text-sm mb-6 leading-relaxed">
+                            Pesanan Anda telah masuk antrian dapur kami. Silakan bersenang-senang sembari menunggu.<br><br>
+                            <span class="text-neon-blue font-bold">Harap segera lakukan pembayaran di meja kasir. Terima kasih!</span>
+                        </p>
+                        <button onclick="ModalSystem.hide(); initRouter();" class="w-full py-3 bg-neon-blue text-coffee-900 font-bold rounded-xl shadow-neon-blue-hover hover:scale-105 transition-all">Mengerti</button>
+                    </div>
+                `);
+            } else {
+                showCustomToast("Gagal mengirim pesanan ke server kasir.", "error");
+            }
+        }
+
+        /**
+         * ==========================================
+         * 6. SCREEN LOCK & DIGITAL RECEIPTS
+         * ==========================================
+         */
+        function renderLockedScreen() {
+            document.getElementById('app').innerHTML = `
+                <div class="h-screen w-screen bg-coffee-900 flex flex-col items-center justify-center p-6 text-center">
+                    <div class="glass-panel p-10 rounded-3xl max-w-sm w-full border-neon-blue/25 shadow-neon-blue animate-fade-in">
+                        <div class="w-16 h-16 bg-neon-purple/20 border border-neon-purple/50 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <i class="fas fa-clock text-2xl text-neon-purple animate-pulse"></i>
+                        </div>
+                        <h2 class="text-xl font-black text-white uppercase mb-4 tracking-wide">PESANAN SEDANG DIPROSES</h2>
+                        <div class="bg-black/40 border border-white/5 py-2 px-4 rounded-xl inline-block mb-6">
+                            <span class="text-neon-blue font-black tracking-widest text-base">${AppState.currentTable}</span>
+                        </div>
+                        <p class="text-gray-300 text-sm leading-relaxed mb-6">
+                            Pesanan telah berhasil dikirim, silakan bersenang-senang menanti hidangan Anda disajikan.<br><br>
+                            Sebelum meninggalkan outlet, silakan lakukan penyelesaian pembayaran di meja kasir.
+                        </p>
+                        <p class="text-xs text-gray-500 font-mono">Layar pesanan terkunci selama sesi aktif.</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderDigitalReceiptScreen() {
+            const order = AppState.activeOrderDetails;
+            if (!order) {
+                document.getElementById('app').innerHTML = `<div class="h-screen w-screen bg-coffee-900 flex items-center justify-center"><p class="text-gray-400">Menyinkronkan Nota Lunas...</p></div>`;
+                return;
+            }
+
+            document.getElementById('app').innerHTML = `
+                <div class="h-screen w-screen bg-coffee-900 flex flex-col items-center justify-center p-6 overflow-y-auto">
+                    <div class="glass-panel p-8 rounded-3xl max-w-sm w-full border-neon-purple/30 shadow-neon-purple animate-fade-in relative">
+                        <div class="w-full h-32 rounded-2xl overflow-hidden mb-6 border border-white/5 bg-coffee-850">
+                            <img src="https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=800&q=80" class="w-full h-full object-cover">
+                        </div>
+
+                        <div class="text-center mb-6">
+                            <span class="text-neon-green bg-neon-green/10 border border-neon-green/30 text-[10px] font-black uppercase px-3 py-1 rounded-full">LUNAS / SELESAI</span>
+                            <h2 class="text-2xl font-black text-white mt-4 tracking-wider uppercase">NOTA DIGITAL</h2>
+                            <p class="text-xs text-gray-400 mt-1">Sesi: ${order.order_id}</p>
+                        </div>
+
+                        <div class="border-t border-b border-white/10 py-4 mb-6 space-y-2 max-h-48 overflow-y-auto pr-1">
+                            ${order.items.map(it => `
+                                <div class="flex justify-between text-xs text-gray-300">
+                                    <span>${it.qty}x ${it.name}</span>
+                                    <span class="font-mono">${formatRp(it.price * it.qty)}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+
+                        <div class="space-y-2 mb-6">
+                            <div class="flex justify-between text-xs text-gray-400"><span>Subtotal</span><span class="font-mono">${formatRp(order.subtotal || (order.total_amount * 0.9))}</span></div>
+                            <div class="flex justify-between text-xs text-gray-400"><span>Pajak</span><span class="font-mono">${formatRp(order.tax || (order.total_amount * 0.1))}</span></div>
+                            <div class="flex justify-between text-base font-bold text-white pt-2 border-t border-white/5">
+                                <span>TOTAL LUNAS</span>
+                                <span class="text-neon-green font-mono">${formatRp(order.total_amount)}</span>
+                            </div>
+                        </div>
+
+                        <div class="text-center p-4 bg-black/40 rounded-2xl border border-white/5">
+                            <p class="text-xs text-neon-blue font-bold">Terima kasih atas kedatangan Anda!</p>
+                            <p class="text-[10px] text-gray-400 mt-1">Simpan tangkapan layar (screenshot) nota digital ini jika diperlukan.</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * ==========================================
+         * 7. KIOSK DISPLAY & SLIDER PROMO
+         * ==========================================
+         */
+        let promoIntervalId = null;
+        function initPromoSlider() {
+            if (promoIntervalId) clearInterval(promoIntervalId);
+            const slides = document.querySelectorAll('.promo-slide');
+            const dots = document.querySelectorAll('.promo-dot');
+            if (slides.length <= 1) return;
+            
+            let currentIdx = 0;
+            promoIntervalId = setInterval(() => {
+                slides[currentIdx].classList.add('opacity-0');
+                slides[currentIdx].classList.remove('opacity-100');
+                slides[currentIdx].style.zIndex = 0;
+                if (dots[currentIdx]) {
+                    dots[currentIdx].classList.remove('bg-neon-blue');
+                    dots[currentIdx].classList.add('bg-white/30');
+                }
+                currentIdx = (currentIdx + 1) % slides.length;
+                slides[currentIdx].classList.remove('opacity-0');
+                slides[currentIdx].classList.add('opacity-100');
+                slides[currentIdx].style.zIndex = 10;
+                if (dots[currentIdx]) {
+                    dots[currentIdx].classList.add('bg-neon-blue');
+                    dots[currentIdx].classList.remove('bg-white/30');
+                }
+            }, 5000);
+        }
+
+        function renderCustomerKiosk() {
+            const app = document.getElementById('app');
+            const promos = AppState.settings.promos || [];
+            let promoHTML = '';
+            
+            if (promos.length > 0) {
+                promoHTML = `
+                    <div class="relative w-full h-36 sm:h-44 md:h-52 rounded-2xl overflow-hidden mb-6 border border-white/5 bg-coffee-850 shadow-neon-blue/10">
+                        ${promos.map((url, i) => `
+                            <div class="promo-slide absolute inset-0 w-full h-full transition-opacity duration-1000 ease-in-out ${i === 0 ? 'opacity-100' : 'opacity-0'}" style="z-index: ${i === 0 ? 10 : 0};">
+                                <img src="${url}" class="w-full h-full object-cover" onerror="this.src='https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=800&q=80'">
+                                <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent flex items-end p-4">
+                                    <span class="bg-neon-blue/20 border border-neon-blue/30 text-neon-blue text-[9px] font-black tracking-widest px-2.5 py-1 rounded-full uppercase">Penawaran Spesial</span>
+                                </div>
+                            </div>
+                        `).join('')}
+                        ${promos.length > 1 ? `
+                            <div class="absolute bottom-3 right-4 z-20 flex gap-1.5 bg-black/40 px-2 py-1 rounded-full backdrop-blur-sm">
+                                ${promos.map((_, i) => `<span class="promo-dot w-1.5 h-1.5 rounded-full ${i === 0 ? 'bg-neon-blue' : 'bg-white/30'}"></span>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            app.innerHTML = `
+                <div class="flex h-full w-full bg-coffee-900 relative overflow-hidden">
+                    <div id="main-content" class="flex-1 flex flex-col h-full overflow-y-auto p-6 pb-24 z-10 transition-all duration-300">
+                        <div class="flex justify-between items-center mb-6 glass-panel p-4 rounded-2xl border-neon-blue/20">
+                            <div>
+                                <h1 class="text-2xl font-black text-white tracking-wider uppercase">${AppState.settings.storeName.split(' ')[0]}<span class="text-neon-blue">${AppState.settings.storeName.split(' ').slice(1).join(' ') || ''}</span></h1>
+                                <p class="text-gray-400 text-[10px] mt-0.5">${AppState.settings.storeSlogan}</p>
+                            </div>
+                            <div class="text-right flex items-center gap-4">
+                                <button onclick="toggleFullscreen()" class="w-10 h-10 rounded-full glass-button flex items-center justify-center text-neon-blue"><i class="fas fa-expand"></i></button>
+                                <div class="bg-neon-blue/10 border border-neon-blue/30 px-5 py-2 rounded-xl"><span class="text-neon-blue font-black text-lg">${AppState.currentTable}</span></div>
+                            </div>
+                        </div>
+
+                        ${promoHTML}
+
+                        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4" id="menu-grid"></div>
+                    </div>
+
+                    <div id="cart-overlay" onclick="toggleCartDrawer()" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden"></div>
+
+                    <div id="cart-drawer" class="fixed right-0 top-0 h-full w-80 md:w-96 glass-panel border-l border-neon-blue/20 z-50 transform translate-x-full transition-transform duration-300 flex flex-col shadow-[-10px_0_30px_rgba(0,240,255,0.15)]">
+                        <div class="p-6 flex-1 flex flex-col overflow-hidden">
+                            <div class="flex justify-between items-center mb-4">
+                                <h2 class="text-2xl font-bold text-white flex items-center gap-2"><i class="fas fa-shopping-cart text-neon-blue"></i> Keranjang</h2>
+                                <button onclick="toggleCartDrawer()" class="text-gray-400 hover:text-white w-8 h-8 flex items-center justify-center rounded-full bg-white/5"><i class="fas fa-times"></i></button>
+                            </div>
+                            <div class="flex-1 overflow-y-auto pr-2 space-y-3" id="cart-items"></div>
+                            <div class="mt-6 pt-4 border-t border-white/10">
+                                <div class="flex justify-between text-gray-400 mb-2"><span>Subtotal</span><span id="cart-subtotal">Rp 0</span></div>
+                                <div class="flex justify-between text-gray-400 mb-2"><span>Pajak</span><span id="cart-tax">Rp 0</span></div>
+                                <div class="flex justify-between text-xl font-bold text-white mb-6"><span>TOTAL</span><span class="text-neon-blue" id="cart-total">Rp 0</span></div>
+                                <button onclick="showCheckoutModal()" id="btn-checkout" class="w-full py-4 rounded-xl font-bold text-lg text-coffee-900 bg-neon-blue shadow-neon-blue hover:shadow-neon-blue-hover transition-all" disabled>KIRIM ORDERAN</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="toggleCartDrawer()" class="fixed bottom-6 right-6 z-30 bg-gradient-to-r from-neon-blue to-neon-purple text-coffee-900 rounded-full p-4 shadow-neon-blue flex items-center gap-3">
+                        <i class="fas fa-shopping-cart text-xl text-coffee-900"></i>
+                        <span id="fab-badge" class="bg-coffee-900 text-neon-blue font-black px-2 py-0.5 rounded-full text-sm">0 Item</span>
+                    </button>
+                </div>
+            `;
+            updateMenuDisplay();
+            updateCartDisplay();
+            initPromoSlider();
+        }
+
+        let cartOpen = false;
+        function toggleCartDrawer() {
+            const drawer = document.getElementById('cart-drawer');
+            const mainContent = document.getElementById('main-content');
+            const overlay = document.getElementById('cart-overlay');
+            cartOpen = !cartOpen;
+            if(cartOpen) {
+                drawer.classList.remove('translate-x-full');
+                if(window.innerWidth >= 768) mainContent.classList.add('pr-96');
+                else overlay.classList.remove('hidden');
+            } else {
+                drawer.classList.add('translate-x-full');
+                overlay.classList.add('hidden');
+                mainContent.classList.remove('pr-96');
+            }
+        }
+
+        function updateMenuDisplay() {
+            const grid = document.getElementById('menu-grid');
+            if (!grid) return;
+            grid.innerHTML = AppState.products.map(p => {
+                const isHabis = p.status === 'habis';
+                return `
+                    <div class="glass-panel rounded-2xl p-3 flex flex-col items-center text-center animate-fade-in relative overflow-hidden group border-white/5 hover:border-neon-blue/30 transition-all">
+                        ${isHabis ? '<div class="absolute inset-0 bg-black/70 z-10 flex items-center justify-center backdrop-blur-sm"><span class="text-red-500 font-bold text-base border-2 border-red-500 px-3 py-0.5 rounded">HABIS</span></div>' : ''}
+                        <div class="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-coffee-800 flex items-center justify-center mb-3 border border-white/5 group-hover:border-neon-blue/50 shadow-inner">
+                            <i class="fas ${p.image || 'fa-cookie'} text-2xl sm:text-3xl text-gray-400 group-hover:text-neon-blue"></i>
+                        </div>
+                        <h3 class="text-white text-xs sm:text-sm font-semibold mb-1 line-clamp-2 h-8 sm:h-10 leading-tight">${p.name}</h3>
+                        <p class="text-neon-blue text-xs sm:text-sm font-black mb-3">${formatRp(p.price)}</p>
+                        <div class="mt-auto w-full">${getCartItemControls(p.id, isHabis)}</div>
+                    </div>`;
+            }).join('');
+        }
+
+        function getCartItemControls(productId, isHabis) {
+            if (isHabis) return `<button disabled class="w-full py-1.5 rounded-lg bg-white/5 text-gray-500 text-xs">Habis</button>`;
+            const cartItem = AppState.cart.find(item => item.id === productId);
+            if (!cartItem) return `<button onclick="addToCart('${productId}')" class="w-full py-1.5 rounded-lg glass-button text-white font-medium hover:text-neon-blue flex items-center justify-center gap-1.5 transition-all text-xs"><i class="fas fa-plus text-[10px]"></i> Tambah</button>`;
+            return `
+                <div class="flex items-center justify-between bg-white/5 border border-neon-blue/30 rounded-lg p-0.5">
+                    <button onclick="updateQty('${productId}', -1)" class="w-7 h-7 rounded text-gray-400 hover:text-white flex items-center justify-center"><i class="fas fa-minus text-[10px]"></i></button>
+                    <span class="font-bold text-neon-blue text-xs">${cartItem.qty}</span>
+                    <button onclick="updateQty('${productId}', 1)" class="w-7 h-7 rounded text-gray-400 hover:text-white flex items-center justify-center"><i class="fas fa-plus text-[10px]"></i></button>
+                </div>`;
+        }
+
+        function updateCartDisplay() {
+            const cartContainer = document.getElementById('cart-items');
+            const btnCheckout = document.getElementById('btn-checkout');
+            const fabBadge = document.getElementById('fab-badge');
+            if (!cartContainer) return;
+
+            if (AppState.cart.length === 0) {
+                cartContainer.innerHTML = `<div class="h-full flex flex-col items-center justify-center text-gray-500 opacity-50"><i class="fas fa-basket-shopping text-5xl mb-4"></i><p class="text-sm">Keranjang kosong</p></div>`;
+                document.getElementById('cart-subtotal').innerText = formatRp(0);
+                document.getElementById('cart-tax').innerText = formatRp(0);
+                document.getElementById('cart-total').innerText = formatRp(0);
+                if(fabBadge) fabBadge.innerText = `0 Item`;
+                btnCheckout.disabled = true; return;
+            }
+
+            let subtotal = 0; let totalQty = 0;
+            cartContainer.innerHTML = AppState.cart.map(item => {
+                const product = AppState.products.find(p => p.id === item.id);
+                if(!product) return ''; subtotal += product.price * item.qty; totalQty += item.qty;
+                return `
+                    <div class="glass-panel rounded-xl p-3 flex justify-between items-center border-white/5">
+                        <div class="flex-1"><h4 class="text-white text-sm font-semibold truncate pr-2">${product.name}</h4><p class="text-neon-blue text-xs mt-1">${formatRp(product.price)}</p></div>
+                        <div class="flex items-center gap-2 bg-coffee-900 rounded-lg p-1 border border-white/10">
+                            <button onclick="updateQty('${item.id}', -1)" class="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:text-white"><i class="fas fa-minus text-xs"></i></button>
+                            <span class="w-4 text-center text-sm font-bold text-neon-blue">${item.qty}</span>
+                            <button onclick="updateQty('${item.id}', 1)" class="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:text-white"><i class="fas fa-plus text-xs"></i></button>
+                        </div>
+                    </div>`;
+            }).join('');
+
+            const tax = subtotal * AppState.settings.taxRate;
+            document.getElementById('cart-subtotal').innerText = formatRp(subtotal);
+            document.getElementById('cart-tax').innerText = formatRp(tax);
+            document.getElementById('cart-total').innerText = formatRp(subtotal + tax);
+            if(fabBadge) fabBadge.innerText = `${totalQty} Item | ${formatRp(subtotal + tax)}`;
+            btnCheckout.disabled = false;
+        }
+
+        function addToCart(id) { AppState.cart.push({ id, qty: 1 }); updateMenuDisplay(); updateCartDisplay(); }
+        function updateQty(id, delta) {
+            const itemIndex = AppState.cart.findIndex(i => i.id === id);
+            if (itemIndex > -1) { AppState.cart[itemIndex].qty += delta; if (AppState.cart[itemIndex].qty <= 0) AppState.cart.splice(itemIndex, 1); }
+            updateMenuDisplay(); updateCartDisplay();
+        }
+
+        const ModalSystem = {
+            show: (html) => { const c = document.getElementById('modal-container'); c.innerHTML = html; c.classList.remove('hidden'); },
+            hide: () => { document.getElementById('modal-container').classList.add('hidden'); }
+        };
+
+        function showCheckoutModal() {
+            if (cartOpen) toggleCartDrawer();
+            let total = 0;
+            AppState.cart.forEach(item => {
+                const product = AppState.products.find(x => x.id === item.id);
+                if (product) total += product.price * item.qty;
+            });
+            const finalTotal = total + (total * AppState.settings.taxRate);
+
+            ModalSystem.show(`
+                <div class="glass-panel p-8 rounded-3xl w-11/12 max-w-md relative animate-fade-in shadow-neon-blue border-neon-blue/30">
+                    <div class="text-center mb-6">
+                        <div class="w-16 h-16 rounded-full bg-neon-blue/10 flex items-center justify-center mx-auto mb-4 border border-neon-blue">
+                            <i class="fas fa-check-circle text-3xl text-neon-blue"></i>
+                        </div>
+                        <h2 class="text-2xl font-bold text-white">Konfirmasi Pemesanan</h2>
+                        <p class="text-gray-400 mt-2">Total tagihan Anda: <span class="text-neon-blue font-bold text-xl">${formatRp(finalTotal)}</span></p>
+                    </div>
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-400 mb-2">Nama Pemesan (Wajib)</label>
+                        <input type="text" id="customer-name" placeholder="Masukan Nama Anda" required class="glow-input w-full bg-coffee-900 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-neon-blue">
+                    </div>
+                    <div class="flex gap-4 mt-8">
+                        <button onclick="ModalSystem.hide()" class="flex-1 py-3 rounded-xl border border-red-500/50 text-red-400 font-semibold">Batal</button>
+                        <button onclick="submitOrder()" class="flex-1 py-3 rounded-xl bg-neon-blue text-coffee-900 font-bold shadow-neon-blue hover:shadow-neon-blue-hover transition-all">Kirim Pesanan</button>
+                    </div>
+                </div>
+            `);
+        }
+
+        function submitOrder() {
+            const nameInput = document.getElementById('customer-name').value.trim();
+            if(!nameInput) {
+                showCustomToast("Nama Pemesan wajib diisi!", "error");
+                return;
+            }
+            ModalSystem.hide(); 
+            processOrderSubmission(nameInput);
+        }
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(e => console.log(e)); }
+            else { if (document.exitFullscreen) document.exitFullscreen(); }
+        }
+
+        window.onload = () => {
+            initRouter();
+        };
+    </script>
+</body>
+</html>
